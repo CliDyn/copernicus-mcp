@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "copernicus-mcp"
-description = "MCP server for safe, validated, cost-aware access to Copernicus Earth observation data."
+description = "MCP server for safe, validated, reproducible access to Copernicus environmental data."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -40,6 +40,12 @@ dev = [
 cmems = ["copernicusmarine>=2.4,<3"]
 cds = ["cdsapi>=0.7.7,<1"]
 all = ["copernicus-mcp[cmems,cds]"]
+
+[project.urls]
+Homepage = "https://github.com/CliDyn/copernicus-mcp"
+Repository = "https://github.com/CliDyn/copernicus-mcp"
+Issues = "https://github.com/CliDyn/copernicus-mcp/issues"
+Changelog = "https://github.com/CliDyn/copernicus-mcp/releases"
 
 [project.scripts]
 copernicus-mcp = "copernicus_mcp.cli:app"
