@@ -1,0 +1,1827 @@
+[
+  {
+    "exclude_when_query_mentions": [
+      "satellite only",
+      "in-situ only",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-global-state",
+    "group_title": "Global Ocean Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "global ocean",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "ocean physics",
+      "sea surface height",
+      "sea surface height anomaly",
+      "thetao",
+      "so"
+    ],
+    "product_ids": [
+      "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      "GLOBAL_MULTIYEAR_PHY_001_030",
+      "GLOBAL_MULTIYEAR_PHY_ENS_001_031"
+    ],
+    "summary": "Global gridded data-assimilative fields of temperature, salinity, currents, and sea surface height — both near-real-time analysis/forecast and multi-decadal reanalysis."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "antarctic",
+      "southern hemisphere",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-arctic-state",
+    "group_title": "Arctic Ocean Physics — analysis, forecast, and reanalysis (including ice-edge processes)",
+    "include_when_query_mentions": [
+      "arctic",
+      "polar",
+      "high latitude",
+      "temperature",
+      "salinity",
+      "currents",
+      "polar currents",
+      "ice-edge"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+      "ARCTIC_ANALYSISFORECAST_PHY_ICE_002_011",
+      "ARCTIC_ANALYSISFORECAST_PHY_TIDE_002_015",
+      "ARCTIC_MULTIYEAR_PHY_002_003",
+      "ARCTIC_MULTIYEAR_PHY_ICE_002_016"
+    ],
+    "summary": "Arctic gridded ocean state (temperature, salinity, currents) at high resolution, capturing interactions between ocean circulation and sea ice at the ice edge."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-mediterranean-state",
+    "group_title": "Mediterranean Sea Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "mediterranean",
+      "med sea",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "sea-surface height",
+      "thermohaline circulation"
+    ],
+    "product_ids": [
+      "MEDSEA_ANALYSISFORECAST_PHY_006_013",
+      "MEDSEA_MULTIYEAR_PHY_006_004"
+    ],
+    "summary": "Mediterranean Sea data-assimilative ocean physics fields (temperature, salinity, currents, sea-surface height) at regional resolution."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global",
+      "mediterranean",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-baltic-state",
+    "group_title": "Baltic Sea Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "baltic",
+      "brackish",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "sea-surface height",
+      "thermohaline circulation"
+    ],
+    "product_ids": [
+      "BALTICSEA_ANALYSISFORECAST_PHY_003_006",
+      "BALTICSEA_MULTIYEAR_PHY_003_011"
+    ],
+    "summary": "Baltic Sea data-assimilative ocean physics, including brackish-water dynamics, thermohaline structure, and ice-cover interactions."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global",
+      "mediterranean",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-black-sea-state",
+    "group_title": "Black Sea Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "black sea",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "sea-surface height",
+      "thermohaline circulation"
+    ],
+    "product_ids": [
+      "BLKSEA_ANALYSISFORECAST_PHY_007_001",
+      "BLKSEA_MULTIYEAR_PHY_007_004"
+    ],
+    "summary": "Black Sea data-assimilative ocean physics resolving thermohaline structure and circulation patterns."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-ibi-state",
+    "group_title": "Iberia-Biscay-Ireland Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "iberia",
+      "biscay",
+      "ireland",
+      "ibi",
+      "shelf",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "sea-surface height"
+    ],
+    "product_ids": [
+      "IBI_ANALYSISFORECAST_PHY_005_001",
+      "IBI_MULTIYEAR_PHY_005_002"
+    ],
+    "summary": "IBI regional data-assimilative ocean physics over the eastern Atlantic shelf, Bay of Biscay, and Irish waters."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic",
+      "biogeochemistry"
+    ],
+    "group_id": "physics-nwshelf-state",
+    "group_title": "European North-West Shelf Physics — analysis, forecast, and reanalysis",
+    "include_when_query_mentions": [
+      "north sea",
+      "north west shelf",
+      "english channel",
+      "shelf",
+      "temperature",
+      "salinity",
+      "currents",
+      "velocity",
+      "sea-surface height",
+      "thermohaline circulation"
+    ],
+    "product_ids": [
+      "NWSHELF_ANALYSISFORECAST_PHY_004_013",
+      "NWSHELF_ANALYSISFORECAST_PHY_LR_004_001",
+      "NWSHELF_MULTIYEAR_PHY_004_009"
+    ],
+    "summary": "Atlantic European North-West Shelf data-assimilative physics fields (North Sea, English Channel) including thermohaline circulation."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "physics only",
+      "in-situ only"
+    ],
+    "group_id": "bgc-global",
+    "group_title": "Global Ocean Biogeochemistry",
+    "include_when_query_mentions": [
+      "biogeochemistry",
+      "carbon",
+      "nitrate",
+      "nutrient",
+      "oxygen",
+      "chlorophyll",
+      "pH",
+      "pCO2",
+      "dissolved inorganic carbon",
+      "alkalinity",
+      "global"
+    ],
+    "product_ids": [
+      "GLOBAL_ANALYSISFORECAST_BGC_001_028",
+      "GLOBAL_MULTIYEAR_BGC_001_029",
+      "GLOBAL_MULTIYEAR_BGC_001_033",
+      "GLOBAL_OMI_HEALTH_carbon_co2_flux_integrated",
+      "GLOBAL_OMI_HEALTH_carbon_ph_area_averaged",
+      "GLOBAL_OMI_HEALTH_carbon_ph_trend",
+      "INSITU_GLO_BGC_CARBON_DISCRETE_MY_013_050",
+      "INSITU_GLO_BGC_DISCRETE_MY_013_046",
+      "MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008",
+      "MULTIOBS_GLO_BGC_NUTRIENTS_CARBON_PROFILES_MYNRT_015_009",
+      "MULTIOBS_GLO_BGC_SURFACE_NRT_015_016",
+      "MULTIOBS_GLO_BIO_BGC_3D_REP_015_010",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_nag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_npg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_sag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_spg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_trend"
+    ],
+    "summary": "Global carbon, nutrients, oxygen, chlorophyll, and carbonate-system fields from models and indicators."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "antarctic"
+    ],
+    "group_id": "bgc-arctic",
+    "group_title": "Arctic Ocean Biogeochemistry",
+    "include_when_query_mentions": [
+      "arctic",
+      "polar biogeochemistry",
+      "chlorophyll",
+      "nutrients",
+      "nutrient cycle",
+      "primary production",
+      "carbonate system"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_BGC_002_004",
+      "ARCTIC_MULTIYEAR_BGC_002_005",
+      "OMI_HEALTH_CHL_ARCTIC_OCEANCOLOUR_area_averaged_mean"
+    ],
+    "summary": "Arctic biogeochemistry — chlorophyll, nutrients, primary production, and carbon under sea ice."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global"
+    ],
+    "group_id": "bgc-mediterranean",
+    "group_title": "Mediterranean Sea Biogeochemistry",
+    "include_when_query_mentions": [
+      "mediterranean biogeochemistry",
+      "chlorophyll",
+      "nitrate",
+      "nutrient cycle",
+      "primary production",
+      "carbonate system"
+    ],
+    "product_ids": [
+      "MEDSEA_ANALYSISFORECAST_BGC_006_014",
+      "MEDSEA_MULTIYEAR_BGC_006_008",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_trend"
+    ],
+    "summary": "Mediterranean carbon, nutrients, oxygen, primary production, and carbonate-system fields."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global"
+    ],
+    "group_id": "bgc-baltic",
+    "group_title": "Baltic Sea Biogeochemistry",
+    "include_when_query_mentions": [
+      "baltic biogeochemistry",
+      "eutrophication",
+      "oxygen",
+      "hypoxia",
+      "chlorophyll",
+      "nutrient cycle"
+    ],
+    "product_ids": [
+      "BALTICSEA_ANALYSISFORECAST_BGC_003_007",
+      "BALTICSEA_MULTIYEAR_BGC_003_012",
+      "OMI_HEALTH_BLOOM_BALTIC_spatiotemporal_coverage",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_trend",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_cod_volume",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_bottom_salinity_arkona_bornholm",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_sto2tz_gotland"
+    ],
+    "summary": "Baltic biogeochemistry highlighting eutrophication, hypoxia, and chlorophyll dynamics."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global",
+      "mediterranean"
+    ],
+    "group_id": "bgc-black-sea",
+    "group_title": "Black Sea Biogeochemistry",
+    "include_when_query_mentions": [
+      "black sea biogeochemistry",
+      "chlorophyll",
+      "oxygen",
+      "hypoxia",
+      "anoxia",
+      "oxygen-deficient zones",
+      "carbonate system"
+    ],
+    "product_ids": [
+      "BLKSEA_ANALYSISFORECAST_BGC_007_010",
+      "BLKSEA_MULTIYEAR_BGC_007_005",
+      "BLKSEA_OMI_HEALTH_oxygen_trend",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_trend"
+    ],
+    "summary": "Black Sea biogeochemistry, including oxygen-deficient (anoxic) zones and the carbonate system."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic"
+    ],
+    "group_id": "bgc-ibi",
+    "group_title": "Iberia-Biscay-Ireland Biogeochemistry",
+    "include_when_query_mentions": [
+      "iberia biogeochemistry",
+      "biscay biogeochemistry",
+      "shelf productivity",
+      "nutrient cycle",
+      "primary production",
+      "carbonate system"
+    ],
+    "product_ids": [
+      "IBI_ANALYSISFORECAST_BGC_005_004",
+      "IBI_MULTIYEAR_BGC_005_003"
+    ],
+    "summary": "IBI shelf biogeochemistry — productivity, nutrients, fisheries support, and carbonate system."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic"
+    ],
+    "group_id": "bgc-nwshelf",
+    "group_title": "European North-West Shelf Biogeochemistry",
+    "include_when_query_mentions": [
+      "north sea biogeochemistry",
+      "shelf biogeochemistry",
+      "eutrophication",
+      "hypoxia",
+      "nutrient cycle"
+    ],
+    "product_ids": [
+      "NWSHELF_ANALYSISFORECAST_BGC_004_002",
+      "NWSHELF_MULTIYEAR_BGC_004_011"
+    ],
+    "summary": "North-West Shelf biogeochemistry, eutrophication, hypoxia, and ecosystem indicators."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "antarctic"
+    ],
+    "group_id": "sea-ice-arctic",
+    "group_title": "Arctic Sea Ice — extent, concentration, thickness, drift",
+    "include_when_query_mentions": [
+      "arctic sea ice",
+      "ice extent",
+      "ice concentration",
+      "ice thickness",
+      "sea ice drift",
+      "ice drift"
+    ],
+    "product_ids": [
+      "ARCTIC_OMI_SI_extent",
+      "ARCTIC_OMI_SI_extent_obs",
+      "OMI_CLIMATE_SI_ARCTIC_transport",
+      "SEAICE_ARC_PHY_AUTO_L3_MYNRT_011_023",
+      "SEAICE_ARC_PHY_AUTO_L4_MYNRT_011_024",
+      "SEAICE_ARC_PHY_AUTO_L4_MY_011_025",
+      "SEAICE_ARC_PHY_CLIMATE_L3_MY_011_021",
+      "SEAICE_ARC_PHY_CLIMATE_L4_MY_011_016",
+      "SEAICE_ARC_PHY_SST-IST_L3S_NRT_011_022",
+      "SEAICE_ARC_SEAICE_L3_REP_OBSERVATIONS_011_010",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_002",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_007",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_008"
+    ],
+    "summary": "Arctic sea-ice products spanning satellite observations and model analysis/forecast/reanalysis — extent, concentration, thickness, drift, and SST-IST temperature."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "arctic"
+    ],
+    "group_id": "sea-ice-antarctic",
+    "group_title": "Antarctic Sea Ice — extent, concentration, thickness, drift",
+    "include_when_query_mentions": [
+      "antarctic sea ice",
+      "southern hemisphere sea ice",
+      "ice extent",
+      "ice thickness",
+      "ice drift"
+    ],
+    "product_ids": [
+      "ANTARCTIC_OMI_SI_extent",
+      "ANTARCTIC_OMI_SI_extent_obs",
+      "SEAICE_ANT_PHY_AUTO_L3_NRT_011_012",
+      "SEAICE_ANT_PHY_L3_MY_011_018"
+    ],
+    "summary": "Antarctic / Southern Hemisphere sea-ice products from satellite observations and models — extent, concentration, drift."
+  },
+  {
+    "exclude_when_query_mentions": [],
+    "group_id": "sea-ice-global",
+    "group_title": "Global Sea Ice Observations",
+    "include_when_query_mentions": [
+      "global sea ice",
+      "polar ice",
+      "polar ice cover",
+      "sea-ice observations",
+      "ice extent satellite"
+    ],
+    "product_ids": [
+      "SEAICE_GLO_PHY_CLIMATE_L3_MY_011_013",
+      "SEAICE_GLO_PHY_L4_MY_011_020",
+      "SEAICE_GLO_PHY_L4_NRT_011_014",
+      "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_001",
+      "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_006",
+      "SEAICE_GLO_SEAICE_L4_REP_OBSERVATIONS_011_009"
+    ],
+    "summary": "Global sea-ice products spanning both poles, primarily satellite-derived."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "arctic",
+      "antarctic"
+    ],
+    "group_id": "sea-ice-baltic",
+    "group_title": "Baltic Sea Ice",
+    "include_when_query_mentions": [
+      "baltic ice",
+      "baltic sea ice",
+      "Baltic ice volume",
+      "Baltic ice extent"
+    ],
+    "product_ids": [
+      "OMI_CLIMATE_SI_BALTIC_extent",
+      "OMI_CLIMATE_SI_BALTIC_volume",
+      "SEAICE_BAL_PHY_L4_MY_011_019",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_004",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_011"
+    ],
+    "summary": "Baltic Sea ice products — seasonal ice cover, ice extent, and interannual variability at high resolution."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "regional only"
+    ],
+    "group_id": "ocean-colour-global",
+    "group_title": "Global Ocean Colour and Chlorophyll-a",
+    "include_when_query_mentions": [
+      "chlorophyll",
+      "ocean colour",
+      "ocean color",
+      "phytoplankton",
+      "primary production",
+      "harmful algal bloom",
+      "KD",
+      "light attenuation"
+    ],
+    "product_ids": [
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_103",
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_107",
+      "OCEANCOLOUR_GLO_BGC_L3_NRT_009_101",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_104",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_108",
+      "OCEANCOLOUR_GLO_BGC_L4_NRT_009_102"
+    ],
+    "summary": "Global ocean colour observations (chlorophyll-a, suspended matter, light attenuation, KD) — Level-3 and Level-4 composites primarily from satellite."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global"
+    ],
+    "group_id": "ocean-colour-regional",
+    "group_title": "Regional Ocean Colour and Chlorophyll-a",
+    "include_when_query_mentions": [
+      "regional chlorophyll",
+      "regional ocean colour",
+      "european ocean colour",
+      "phytoplankton",
+      "harmful algal bloom"
+    ],
+    "product_ids": [
+      "OCEANCOLOUR_ARC_BGC_HR_L3_NRT_009_201",
+      "OCEANCOLOUR_ARC_BGC_HR_L4_NRT_009_207",
+      "OCEANCOLOUR_ARC_BGC_L3_MY_009_123",
+      "OCEANCOLOUR_ARC_BGC_L3_NRT_009_121",
+      "OCEANCOLOUR_ARC_BGC_L4_MY_009_124",
+      "OCEANCOLOUR_ARC_BGC_L4_NRT_009_122",
+      "OCEANCOLOUR_ATL_BGC_L3_MY_009_113",
+      "OCEANCOLOUR_ATL_BGC_L3_NRT_009_111",
+      "OCEANCOLOUR_ATL_BGC_L4_MY_009_118",
+      "OCEANCOLOUR_ATL_BGC_L4_NRT_009_116",
+      "OCEANCOLOUR_BAL_BGC_HR_L3_NRT_009_202",
+      "OCEANCOLOUR_BAL_BGC_HR_L4_NRT_009_208",
+      "OCEANCOLOUR_BAL_BGC_L3_MY_009_133",
+      "OCEANCOLOUR_BAL_BGC_L3_NRT_009_131",
+      "OCEANCOLOUR_BAL_BGC_L4_MY_009_134",
+      "OCEANCOLOUR_BAL_BGC_L4_NRT_009_132",
+      "OCEANCOLOUR_BLK_BGC_HR_L3_NRT_009_206",
+      "OCEANCOLOUR_BLK_BGC_HR_L4_NRT_009_212",
+      "OCEANCOLOUR_BLK_BGC_L3_MY_009_153",
+      "OCEANCOLOUR_BLK_BGC_L3_NRT_009_151",
+      "OCEANCOLOUR_BLK_BGC_L4_MY_009_154",
+      "OCEANCOLOUR_BLK_BGC_L4_NRT_009_152",
+      "OCEANCOLOUR_IBI_BGC_HR_L3_NRT_009_204",
+      "OCEANCOLOUR_IBI_BGC_HR_L4_NRT_009_210",
+      "OCEANCOLOUR_MED_BGC_HR_L3_NRT_009_205",
+      "OCEANCOLOUR_MED_BGC_HR_L4_NRT_009_211",
+      "OCEANCOLOUR_MED_BGC_L3_MY_009_143",
+      "OCEANCOLOUR_MED_BGC_L3_NRT_009_141",
+      "OCEANCOLOUR_MED_BGC_L4_MY_009_144",
+      "OCEANCOLOUR_MED_BGC_L4_NRT_009_142",
+      "OCEANCOLOUR_NWS_BGC_HR_L3_NRT_009_203",
+      "OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209"
+    ],
+    "summary": "Regional satellite ocean colour at higher resolution for European seas (Mediterranean, Baltic, Black Sea, IBI, NW Shelf, Arctic, Atlantic)."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "sub-surface",
+      "sub-surface temperature",
+      "salinity"
+    ],
+    "group_id": "sst-global",
+    "group_title": "Global Sea-Surface Temperature",
+    "include_when_query_mentions": [
+      "sst",
+      "sea surface temperature",
+      "sea-surface temperature anomaly",
+      "skin temperature",
+      "global temperature"
+    ],
+    "product_ids": [
+      "SST_GLO_PHY_L3S_MY_010_039",
+      "SST_GLO_PHY_L4_NRT_010_005",
+      "SST_GLO_SST_L3S_NRT_OBSERVATIONS_010_010",
+      "SST_GLO_SST_L4_NRT_OBSERVATIONS_010_001",
+      "SST_GLO_SST_L4_REP_OBSERVATIONS_010_011",
+      "SST_GLO_SST_L4_REP_OBSERVATIONS_010_024"
+    ],
+    "summary": "Global SST observations and analyses from satellite and blended products, including SST anomalies and skin temperature."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global",
+      "salinity"
+    ],
+    "group_id": "sst-regional",
+    "group_title": "Regional Sea-Surface Temperature",
+    "include_when_query_mentions": [
+      "regional sst",
+      "mediterranean sst",
+      "baltic sst",
+      "black sea sst",
+      "sea-surface temperature anomaly"
+    ],
+    "product_ids": [
+      "OMI_CLIMATE_SST_BAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_trend",
+      "OMI_CLIMATE_SST_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IBI_trend",
+      "OMI_CLIMATE_SST_IST_ARCTIC_anomaly",
+      "OMI_CLIMATE_SST_IST_ARCTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IST_ARCTIC_trend",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_trend",
+      "OMI_EXTREME_SST_BALTIC_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_IBI_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_MEDSEA_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_NORTHWESTSHELF_sst_mean_and_anomaly_obs",
+      "SST_ATL_PHY_L3S_MY_010_038",
+      "SST_ATL_PHY_L3S_NRT_010_037",
+      "SST_ATL_SST_L4_NRT_OBSERVATIONS_010_025",
+      "SST_ATL_SST_L4_REP_OBSERVATIONS_010_026",
+      "SST_BAL_PHY_L3S_MY_010_040",
+      "SST_BAL_PHY_SUBSKIN_L4_NRT_010_034",
+      "SST_BAL_SST_L3S_NRT_OBSERVATIONS_010_032",
+      "SST_BAL_SST_L4_NRT_OBSERVATIONS_010_007_b",
+      "SST_BAL_SST_L4_REP_OBSERVATIONS_010_016",
+      "SST_BS_PHY_L3S_MY_010_041",
+      "SST_BS_PHY_SUBSKIN_L4_NRT_010_035",
+      "SST_BS_SST_L3S_NRT_OBSERVATIONS_010_013",
+      "SST_BS_SST_L4_NRT_OBSERVATIONS_010_006",
+      "SST_BS_SST_L4_REP_OBSERVATIONS_010_022",
+      "SST_MED_PHY_L3S_MY_010_042",
+      "SST_MED_PHY_SUBSKIN_L4_NRT_010_036",
+      "SST_MED_SST_L3S_NRT_OBSERVATIONS_010_012",
+      "SST_MED_SST_L4_NRT_OBSERVATIONS_010_004",
+      "SST_MED_SST_L4_REP_OBSERVATIONS_010_021"
+    ],
+    "summary": "Regional SST observations and OMI_EXTREME_SST products for the Mediterranean, Baltic, Black Sea, IBI, NW Shelf, Atlantic, and other European seas."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "regional only"
+    ],
+    "group_id": "waves-global",
+    "group_title": "Global Ocean Waves",
+    "include_when_query_mentions": [
+      "wave height",
+      "significant wave height",
+      "swh",
+      "wave period",
+      "wave direction",
+      "global waves"
+    ],
+    "product_ids": [
+      "GLOBAL_ANALYSISFORECAST_WAV_001_027",
+      "GLOBAL_MULTIYEAR_WAV_001_032",
+      "INSITU_GLO_WAV_DISCRETE_MY_013_045",
+      "OMI_EXTREME_STATE_GLOBAL_trend",
+      "WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002",
+      "WAVE_GLO_PHY_SPC-FWK_L4_NRT_014_004",
+      "WAVE_GLO_PHY_SPC_L3_MY_014_006",
+      "WAVE_GLO_PHY_SPC_L3_NRT_014_009",
+      "WAVE_GLO_PHY_SWH_L3_MY_014_005",
+      "WAVE_GLO_PHY_SWH_L3_NRT_014_001",
+      "WAVE_GLO_PHY_SWH_L4_MY_014_007",
+      "WAVE_GLO_PHY_SWH_L4_NRT_014_003"
+    ],
+    "summary": "Global wave fields (significant height, peak period, direction) and altimeter-derived observations."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global"
+    ],
+    "group_id": "waves-regional",
+    "group_title": "Regional Ocean Waves",
+    "include_when_query_mentions": [
+      "regional waves",
+      "mediterranean waves",
+      "baltic waves",
+      "black sea waves",
+      "north sea waves",
+      "wave energy",
+      "wave spectra",
+      "wave power"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSIS_FORECAST_WAV_002_014",
+      "ARCTIC_MULTIYEAR_WAV_002_013",
+      "BALTICSEA_ANALYSISFORECAST_WAV_003_010",
+      "BALTICSEA_MULTIYEAR_WAV_003_015",
+      "BLKSEA_ANALYSISFORECAST_WAV_007_003",
+      "BLKSEA_MULTIYEAR_WAV_007_006",
+      "BLKSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "IBI_ANALYSISFORECAST_WAV_005_005",
+      "IBI_MULTIYEAR_WAV_005_006",
+      "IBI_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "IBI_OMI_SEASTATE_swi",
+      "MEDSEA_ANALYSISFORECAST_WAV_006_017",
+      "MEDSEA_MULTIYEAR_WAV_006_012",
+      "MEDSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "NWSHELF_ANALYSISFORECAST_WAV_004_014",
+      "NWSHELF_REANALYSIS_WAV_004_015",
+      "OMI_EXTREME_WAVE_BALTIC_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_BLKSEA_recent_changes",
+      "OMI_EXTREME_WAVE_BLKSEA_wave_power",
+      "OMI_EXTREME_WAVE_IBI_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_MEDSEA_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_NORTHWESTSHELF_swh_mean_and_anomaly_obs"
+    ],
+    "summary": "Regional wave products (model forecasts and satellite/altimeter observations) for European seas — Mediterranean, Baltic, Black Sea, IBI, NW Shelf, Arctic."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "regional tide gauges"
+    ],
+    "group_id": "sea-level-global",
+    "group_title": "Global Sea Level — altimetry and sea-surface height",
+    "include_when_query_mentions": [
+      "sea level",
+      "altimetry",
+      "ssh",
+      "sea-surface height",
+      "sea-surface height anomaly",
+      "sla",
+      "mean dynamic topography",
+      "MDT",
+      "geostrophic currents"
+    ],
+    "product_ids": [
+      "OMI_CLIMATE_SL_GLOBAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_GLOBAL_regional_trends",
+      "SEALEVEL_GLO_PHY_CLIMATE_L4_MY_008_057",
+      "SEALEVEL_GLO_PHY_L3_MY_008_062",
+      "SEALEVEL_GLO_PHY_L3_NRT_008_044",
+      "SEALEVEL_GLO_PHY_L4_MY_008_047",
+      "SEALEVEL_GLO_PHY_L4_NRT_008_046",
+      "SEALEVEL_GLO_PHY_MDT_008_063",
+      "SEALEVEL_GLO_PHY_NOISE_L4_STATIC_008_033"
+    ],
+    "summary": "Global sea-level observations from satellite altimetry — sea-surface height anomaly, mean dynamic topography reference fields, and altimetry-derived geostrophic currents."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global"
+    ],
+    "group_id": "sea-level-european",
+    "group_title": "European Coastal Sea Level (tide gauges, reanalysis, regional MDT)",
+    "include_when_query_mentions": [
+      "tide gauge",
+      "coastal sea level",
+      "european sea level",
+      "regional sea level",
+      "sea-surface height",
+      "mean dynamic topography"
+    ],
+    "product_ids": [
+      "OMI_CLIMATE_SL_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_EUROPE_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_EXTREME_SL_BALTIC_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_IBI_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_MEDSEA_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_NORTHWESTSHELF_slev_mean_and_anomaly_obs",
+      "SEALEVEL_BLK_PHY_MDT_L4_STATIC_008_067",
+      "SEALEVEL_EUR_PHY_L3_MY_008_061",
+      "SEALEVEL_EUR_PHY_L3_NRT_008_059",
+      "SEALEVEL_EUR_PHY_L4_MY_008_068",
+      "SEALEVEL_EUR_PHY_L4_NRT_008_060",
+      "SEALEVEL_EUR_PHY_MDT_L4_STATIC_008_070",
+      "SEALEVEL_MED_PHY_MDT_L4_STATIC_008_066"
+    ],
+    "summary": "European regional sea-level products — tide-gauge observations, coastal reanalysis, and regional mean-dynamic-topography fields for the Mediterranean, Baltic, Black Sea, IBI, NW Shelf, and broader European coast."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "currents only",
+      "regional only"
+    ],
+    "group_id": "wind-global",
+    "group_title": "Global Surface Wind from Scatterometer",
+    "include_when_query_mentions": [
+      "wind",
+      "scatterometer",
+      "wind speed",
+      "wind stress",
+      "surface wind",
+      "surface wind vector"
+    ],
+    "product_ids": [
+      "WIND_GLO_PHY_CLIMATE_L4_MY_012_003",
+      "WIND_GLO_PHY_L3_MY_012_005",
+      "WIND_GLO_PHY_L3_NRT_012_002",
+      "WIND_GLO_PHY_L4_MY_012_006",
+      "WIND_GLO_PHY_L4_NRT_012_004"
+    ],
+    "summary": "Global surface wind speed, stress, and vector components observed from scatterometer satellites."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "climate baseline",
+      "historical reanalysis",
+      "hindcast"
+    ],
+    "group_id": "operational-forecast",
+    "group_title": "Operational Forecast Products (cross-domain)",
+    "include_when_query_mentions": [
+      "forecast",
+      "short-range forecast",
+      "analysis and forecast",
+      "operational",
+      "near real time",
+      "near-real-time",
+      "nrt",
+      "anfc"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_BGC_002_004",
+      "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+      "ARCTIC_ANALYSISFORECAST_PHY_ICE_002_011",
+      "ARCTIC_ANALYSISFORECAST_PHY_TIDE_002_015",
+      "ARCTIC_ANALYSIS_FORECAST_WAV_002_014",
+      "BALTICSEA_ANALYSISFORECAST_BGC_003_007",
+      "BALTICSEA_ANALYSISFORECAST_PHY_003_006",
+      "BALTICSEA_ANALYSISFORECAST_WAV_003_010",
+      "BLKSEA_ANALYSISFORECAST_BGC_007_010",
+      "BLKSEA_ANALYSISFORECAST_PHY_007_001",
+      "BLKSEA_ANALYSISFORECAST_WAV_007_003",
+      "GLOBAL_ANALYSISFORECAST_BGC_001_028",
+      "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      "GLOBAL_ANALYSISFORECAST_WAV_001_027",
+      "IBI_ANALYSISFORECAST_BGC_005_004",
+      "IBI_ANALYSISFORECAST_PHY_005_001",
+      "IBI_ANALYSISFORECAST_WAV_005_005",
+      "MEDSEA_ANALYSISFORECAST_BGC_006_014",
+      "MEDSEA_ANALYSISFORECAST_PHY_006_013",
+      "MEDSEA_ANALYSISFORECAST_WAV_006_017",
+      "NWSHELF_ANALYSISFORECAST_BGC_004_002",
+      "NWSHELF_ANALYSISFORECAST_PHY_004_013",
+      "NWSHELF_ANALYSISFORECAST_PHY_LR_004_001",
+      "NWSHELF_ANALYSISFORECAST_WAV_004_014"
+    ],
+    "summary": "All CMEMS products providing operational analysis-and-forecast fields — relevant for near-real-time decision support."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "forecast",
+      "near real time",
+      "operational"
+    ],
+    "group_id": "climate-reanalysis",
+    "group_title": "Climate Reanalyses (cross-domain)",
+    "include_when_query_mentions": [
+      "reanalysis",
+      "hindcast",
+      "retrospective",
+      "multi-year",
+      "multi-decadal",
+      "reconstruction",
+      "climate baseline",
+      "historical",
+      "long record"
+    ],
+    "product_ids": [
+      "ARCTIC_MULTIYEAR_BGC_002_005",
+      "ARCTIC_MULTIYEAR_PHY_002_003",
+      "ARCTIC_MULTIYEAR_PHY_ICE_002_016",
+      "ARCTIC_MULTIYEAR_WAV_002_013",
+      "BALTICSEA_MULTIYEAR_BGC_003_012",
+      "BALTICSEA_MULTIYEAR_PHY_003_011",
+      "BALTICSEA_MULTIYEAR_WAV_003_015",
+      "BLKSEA_MULTIYEAR_BGC_007_005",
+      "BLKSEA_MULTIYEAR_PHY_007_004",
+      "BLKSEA_MULTIYEAR_WAV_007_006",
+      "GLOBAL_MULTIYEAR_BGC_001_029",
+      "GLOBAL_MULTIYEAR_BGC_001_033",
+      "GLOBAL_MULTIYEAR_PHY_001_030",
+      "GLOBAL_MULTIYEAR_PHY_ENS_001_031",
+      "GLOBAL_MULTIYEAR_WAV_001_032",
+      "IBI_MULTIYEAR_BGC_005_003",
+      "IBI_MULTIYEAR_PHY_005_002",
+      "IBI_MULTIYEAR_WAV_005_006",
+      "MEDSEA_MULTIYEAR_BGC_006_008",
+      "MEDSEA_MULTIYEAR_PHY_006_004",
+      "MEDSEA_MULTIYEAR_WAV_006_012",
+      "NWSHELF_MULTIYEAR_BGC_004_011",
+      "NWSHELF_MULTIYEAR_PHY_004_009",
+      "NWSHELF_REANALYSIS_WAV_004_015",
+      "WAVE_GLO_PHY_SPC_L3_MY_014_006"
+    ],
+    "summary": "Multi-decadal reanalysis products produced with homogeneous forcings — best for climate baselines, model validation, and historical reconstruction."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "in-situ",
+      "moored"
+    ],
+    "group_id": "satellite-observations",
+    "group_title": "Satellite Observation Products",
+    "include_when_query_mentions": [
+      "satellite",
+      "remote sensing",
+      "ocean colour from satellite",
+      "altimetry",
+      "scatterometer"
+    ],
+    "product_ids": [
+      "OCEANCOLOUR_ARC_BGC_HR_L3_NRT_009_201",
+      "OCEANCOLOUR_ARC_BGC_HR_L4_NRT_009_207",
+      "OCEANCOLOUR_ARC_BGC_L3_MY_009_123",
+      "OCEANCOLOUR_ARC_BGC_L3_NRT_009_121",
+      "OCEANCOLOUR_ARC_BGC_L4_MY_009_124",
+      "OCEANCOLOUR_ARC_BGC_L4_NRT_009_122",
+      "OCEANCOLOUR_ATL_BGC_L3_MY_009_113",
+      "OCEANCOLOUR_ATL_BGC_L3_NRT_009_111",
+      "OCEANCOLOUR_ATL_BGC_L4_MY_009_118",
+      "OCEANCOLOUR_ATL_BGC_L4_NRT_009_116",
+      "OCEANCOLOUR_BAL_BGC_HR_L3_NRT_009_202",
+      "OCEANCOLOUR_BAL_BGC_HR_L4_NRT_009_208",
+      "OCEANCOLOUR_BAL_BGC_L3_MY_009_133",
+      "OCEANCOLOUR_BAL_BGC_L3_NRT_009_131",
+      "OCEANCOLOUR_BAL_BGC_L4_MY_009_134",
+      "OCEANCOLOUR_BAL_BGC_L4_NRT_009_132",
+      "OCEANCOLOUR_BLK_BGC_HR_L3_NRT_009_206",
+      "OCEANCOLOUR_BLK_BGC_HR_L4_NRT_009_212",
+      "OCEANCOLOUR_BLK_BGC_L3_MY_009_153",
+      "OCEANCOLOUR_BLK_BGC_L3_NRT_009_151",
+      "OCEANCOLOUR_BLK_BGC_L4_MY_009_154",
+      "OCEANCOLOUR_BLK_BGC_L4_NRT_009_152",
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_103",
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_107",
+      "OCEANCOLOUR_GLO_BGC_L3_NRT_009_101",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_104",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_108",
+      "OCEANCOLOUR_GLO_BGC_L4_NRT_009_102",
+      "OCEANCOLOUR_IBI_BGC_HR_L3_NRT_009_204",
+      "OCEANCOLOUR_IBI_BGC_HR_L4_NRT_009_210",
+      "OCEANCOLOUR_MED_BGC_HR_L3_NRT_009_205",
+      "OCEANCOLOUR_MED_BGC_HR_L4_NRT_009_211",
+      "OCEANCOLOUR_MED_BGC_L3_MY_009_143",
+      "OCEANCOLOUR_MED_BGC_L3_NRT_009_141",
+      "OCEANCOLOUR_MED_BGC_L4_MY_009_144",
+      "OCEANCOLOUR_MED_BGC_L4_NRT_009_142",
+      "OCEANCOLOUR_NWS_BGC_HR_L3_NRT_009_203",
+      "OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209",
+      "SEAICE_ANT_PHY_AUTO_L3_NRT_011_012",
+      "SEAICE_ANT_PHY_L3_MY_011_018",
+      "SEAICE_ARC_PHY_AUTO_L3_MYNRT_011_023",
+      "SEAICE_ARC_PHY_AUTO_L4_MYNRT_011_024",
+      "SEAICE_ARC_PHY_AUTO_L4_MY_011_025",
+      "SEAICE_ARC_PHY_CLIMATE_L3_MY_011_021",
+      "SEAICE_ARC_PHY_CLIMATE_L4_MY_011_016",
+      "SEAICE_ARC_PHY_SST-IST_L3S_NRT_011_022",
+      "SEAICE_ARC_SEAICE_L3_REP_OBSERVATIONS_011_010",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_002",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_007",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_008",
+      "SEAICE_BAL_PHY_L4_MY_011_019",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_004",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_011",
+      "SEAICE_GLO_PHY_CLIMATE_L3_MY_011_013",
+      "SEAICE_GLO_PHY_L4_MY_011_020",
+      "SEAICE_GLO_PHY_L4_NRT_011_014",
+      "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_001",
+      "SEAICE_GLO_SEAICE_L4_NRT_OBSERVATIONS_011_006",
+      "SEAICE_GLO_SEAICE_L4_REP_OBSERVATIONS_011_009",
+      "SEALEVEL_BLK_PHY_MDT_L4_STATIC_008_067",
+      "SEALEVEL_EUR_PHY_L3_MY_008_061",
+      "SEALEVEL_EUR_PHY_L3_NRT_008_059",
+      "SEALEVEL_EUR_PHY_L4_MY_008_068",
+      "SEALEVEL_EUR_PHY_L4_NRT_008_060",
+      "SEALEVEL_EUR_PHY_MDT_L4_STATIC_008_070",
+      "SEALEVEL_GLO_PHY_CLIMATE_L4_MY_008_057",
+      "SEALEVEL_GLO_PHY_L3_MY_008_062",
+      "SEALEVEL_GLO_PHY_L3_NRT_008_044",
+      "SEALEVEL_GLO_PHY_L4_MY_008_047",
+      "SEALEVEL_GLO_PHY_L4_NRT_008_046",
+      "SEALEVEL_GLO_PHY_MDT_008_063",
+      "SEALEVEL_GLO_PHY_NOISE_L4_STATIC_008_033",
+      "SEALEVEL_MED_PHY_MDT_L4_STATIC_008_066",
+      "SST_ATL_PHY_L3S_MY_010_038",
+      "SST_ATL_PHY_L3S_NRT_010_037",
+      "SST_ATL_SST_L4_NRT_OBSERVATIONS_010_025",
+      "SST_ATL_SST_L4_REP_OBSERVATIONS_010_026",
+      "SST_BAL_PHY_L3S_MY_010_040",
+      "SST_BAL_PHY_SUBSKIN_L4_NRT_010_034",
+      "SST_BAL_SST_L3S_NRT_OBSERVATIONS_010_032",
+      "SST_BAL_SST_L4_NRT_OBSERVATIONS_010_007_b",
+      "SST_BAL_SST_L4_REP_OBSERVATIONS_010_016",
+      "SST_BS_PHY_L3S_MY_010_041",
+      "SST_BS_PHY_SUBSKIN_L4_NRT_010_035",
+      "SST_BS_SST_L3S_NRT_OBSERVATIONS_010_013",
+      "SST_BS_SST_L4_NRT_OBSERVATIONS_010_006",
+      "SST_BS_SST_L4_REP_OBSERVATIONS_010_022",
+      "SST_GLO_PHY_L3S_MY_010_039",
+      "SST_GLO_PHY_L4_NRT_010_005",
+      "SST_GLO_SST_L3S_NRT_OBSERVATIONS_010_010",
+      "SST_GLO_SST_L4_NRT_OBSERVATIONS_010_001",
+      "SST_GLO_SST_L4_REP_OBSERVATIONS_010_011",
+      "SST_GLO_SST_L4_REP_OBSERVATIONS_010_024",
+      "SST_MED_PHY_L3S_MY_010_042",
+      "SST_MED_PHY_SUBSKIN_L4_NRT_010_036",
+      "SST_MED_SST_L3S_NRT_OBSERVATIONS_010_012",
+      "SST_MED_SST_L4_NRT_OBSERVATIONS_010_004",
+      "SST_MED_SST_L4_REP_OBSERVATIONS_010_021",
+      "WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002",
+      "WAVE_GLO_PHY_SPC-FWK_L4_NRT_014_004",
+      "WAVE_GLO_PHY_SPC_L3_NRT_014_009",
+      "WAVE_GLO_PHY_SWH_L3_MY_014_005",
+      "WAVE_GLO_PHY_SWH_L3_NRT_014_001",
+      "WAVE_GLO_PHY_SWH_L4_MY_014_007",
+      "WAVE_GLO_PHY_SWH_L4_NRT_014_003",
+      "WIND_ARC_PHY_HR_L3_MY_012_105",
+      "WIND_ARC_PHY_HR_L3_NRT_012_100",
+      "WIND_ATL_PHY_HR_L3_MY_012_106",
+      "WIND_ATL_PHY_HR_L3_NRT_012_101",
+      "WIND_BAL_PHY_HR_L3_MY_012_107",
+      "WIND_BAL_PHY_HR_L3_NRT_012_102",
+      "WIND_BLK_PHY_HR_L3_MY_012_108",
+      "WIND_BLK_PHY_HR_L3_NRT_012_103",
+      "WIND_GLO_PHY_CLIMATE_L4_MY_012_003",
+      "WIND_GLO_PHY_L3_MY_012_005",
+      "WIND_GLO_PHY_L3_NRT_012_002",
+      "WIND_GLO_PHY_L4_MY_012_006",
+      "WIND_GLO_PHY_L4_NRT_012_004",
+      "WIND_MED_PHY_HR_L3_MY_012_109",
+      "WIND_MED_PHY_HR_L3_NRT_012_104"
+    ],
+    "summary": "Satellite-derived ocean observations — SST, ocean colour, sea level, sea ice, wind."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "satellite",
+      "gridded model"
+    ],
+    "group_id": "in-situ-observations",
+    "group_title": "In-Situ Ocean Observations",
+    "include_when_query_mentions": [
+      "in-situ",
+      "in situ",
+      "argo",
+      "profiling float",
+      "glider",
+      "drifter",
+      "mooring",
+      "profiler",
+      "ship CTD",
+      "ctd",
+      "temperature and salinity profiles"
+    ],
+    "product_ids": [
+      "INSITU_ARC_PHYBGCWAV_DISCRETE_MYNRT_013_031",
+      "INSITU_BAL_PHYBGCWAV_DISCRETE_MYNRT_013_032",
+      "INSITU_BLK_PHYBGCWAV_DISCRETE_MYNRT_013_034",
+      "INSITU_GLO_BGC_CARBON_DISCRETE_MY_013_050",
+      "INSITU_GLO_BGC_DISCRETE_MY_013_046",
+      "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030",
+      "INSITU_GLO_PHY_SSH_DISCRETE_MY_013_053",
+      "INSITU_GLO_PHY_TS_DISCRETE_MY_013_001",
+      "INSITU_GLO_PHY_TS_OA_MY_013_052",
+      "INSITU_GLO_PHY_TS_OA_NRT_013_002",
+      "INSITU_GLO_PHY_UV_DISCRETE_MY_013_044",
+      "INSITU_GLO_PHY_UV_DISCRETE_NRT_013_048",
+      "INSITU_GLO_WAV_DISCRETE_MY_013_045",
+      "INSITU_IBI_PHYBGCWAV_DISCRETE_MYNRT_013_033",
+      "INSITU_MED_PHYBGCWAV_DISCRETE_MYNRT_013_035",
+      "INSITU_NWS_PHYBGCWAV_DISCRETE_MYNRT_013_036",
+      "MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008",
+      "MULTIOBS_GLO_BGC_NUTRIENTS_CARBON_PROFILES_MYNRT_015_009",
+      "MULTIOBS_GLO_BGC_SURFACE_NRT_015_016",
+      "MULTIOBS_GLO_BIO_BGC_3D_REP_015_010",
+      "MULTIOBS_GLO_PHY_MYNRT_015_003",
+      "MULTIOBS_GLO_PHY_SSS_L3_MYNRT_015_014",
+      "MULTIOBS_GLO_PHY_SSS_L4_MY_015_015",
+      "MULTIOBS_GLO_PHY_S_SURFACE_MYNRT_015_013",
+      "MULTIOBS_GLO_PHY_TSUV_3D_MYNRT_015_012",
+      "MULTIOBS_GLO_PHY_UVW_3D_MYNRT_015_007"
+    ],
+    "summary": "Raw point measurements: moored, drifting, and profiling in-situ observations — Argo profiling floats, gliders, drifters, ship CTDs, temperature and salinity profiles."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "primary data",
+      "high-resolution"
+    ],
+    "group_id": "ocean-monitoring-indicators",
+    "group_title": "Ocean Monitoring Indicators (OMIs)",
+    "include_when_query_mentions": [
+      "omi",
+      "indicator",
+      "trend",
+      "anomaly",
+      "annual report",
+      "AMOC",
+      "ocean circulation index",
+      "sea-ice transport",
+      "ocean heat content"
+    ],
+    "product_ids": [
+      "ANTARCTIC_OMI_SI_extent",
+      "ANTARCTIC_OMI_SI_extent_obs",
+      "ARCTIC_OMI_SI_extent",
+      "ARCTIC_OMI_SI_extent_obs",
+      "ARCTIC_OMI_TEMPSAL_FWC",
+      "BLKSEA_OMI_HEALTH_oxygen_trend",
+      "BLKSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "BLKSEA_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "BLKSEA_OMI_TEMPSAL_sst_area_averaged_anomalies",
+      "BLKSEA_OMI_TEMPSAL_sst_trend",
+      "GLOBAL_OMI_CLIMVAR_enso_Tzt_anomaly",
+      "GLOBAL_OMI_CLIMVAR_enso_sst_area_averaged_anomalies",
+      "GLOBAL_OMI_HEALTH_carbon_co2_flux_integrated",
+      "GLOBAL_OMI_HEALTH_carbon_ph_area_averaged",
+      "GLOBAL_OMI_HEALTH_carbon_ph_trend",
+      "GLOBAL_OMI_NATLANTIC_amoc_26N_profile",
+      "GLOBAL_OMI_NATLANTIC_amoc_max26N_timeseries",
+      "GLOBAL_OMI_TEMPSAL_sst_area_averaged_anomalies",
+      "GLOBAL_OMI_TEMPSAL_sst_trend",
+      "GLOBAL_OMI_WMHE_heattrp",
+      "GLOBAL_OMI_WMHE_northward_mht",
+      "GLOBAL_OMI_WMHE_voltrp",
+      "IBI_OMI_CURRENTS_cui",
+      "IBI_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "IBI_OMI_SEASTATE_swi",
+      "IBI_OMI_WMHE_mow",
+      "MEDSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "MEDSEA_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "MEDSEA_OMI_TEMPSAL_sst_area_averaged_anomalies",
+      "MEDSEA_OMI_TEMPSAL_sst_trend",
+      "NORTHWESTSHELF_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "OMI_CIRCULATION_BOUNDARY_ATLANTIC_gulf_stream_destabilization_point",
+      "OMI_CIRCULATION_BOUNDARY_BLKSEA_rim_current_index",
+      "OMI_CIRCULATION_BOUNDARY_PACIFIC_kuroshio_phase_area_averaged",
+      "OMI_CIRCULATION_MOC_BLKSEA_area_averaged_mean",
+      "OMI_CIRCULATION_MOC_MEDSEA_area_averaged_mean",
+      "OMI_CIRCULATION_VOLTRANS_ARCTIC_averaged",
+      "OMI_CIRCULATION_VOLTRANS_IBI_section_integrated_anomalies",
+      "OMI_CLIMATE_OFC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_2000",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_300",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_700",
+      "OMI_CLIMATE_OHC_GLOBAL_trend",
+      "OMI_CLIMATE_OHC_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_OSC_MEDSEA_volume_mean",
+      "OMI_CLIMATE_SI_ARCTIC_transport",
+      "OMI_CLIMATE_SI_BALTIC_extent",
+      "OMI_CLIMATE_SI_BALTIC_volume",
+      "OMI_CLIMATE_SL_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_EUROPE_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_GLOBAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_GLOBAL_regional_trends",
+      "OMI_CLIMATE_SL_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_trend",
+      "OMI_CLIMATE_SST_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IBI_trend",
+      "OMI_CLIMATE_SST_IST_ARCTIC_anomaly",
+      "OMI_CLIMATE_SST_IST_ARCTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IST_ARCTIC_trend",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Stz_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Ttz_trend",
+      "OMI_CLIMATE_TEMPSAL_IBI_extreme_var_mean_and_anomaly",
+      "OMI_CLIMATE_THSL_GLOBAL_area_averaged_anomalies_0_2000",
+      "OMI_CLIMATE_THSL_GLOBAL_area_averaged_anomalies_0_700",
+      "OMI_CLIMATE_THSL_GLOBAL_trend",
+      "OMI_EXTREME_CLIMVAR_PACIFIC_npgo_sla_eof_mode_projection",
+      "OMI_EXTREME_MHW_ARCTIC_area_averaged_anomalies",
+      "OMI_EXTREME_SL_BALTIC_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_IBI_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_MEDSEA_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_NORTHWESTSHELF_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_BALTIC_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_IBI_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_MEDSEA_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_NORTHWESTSHELF_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_STATE_GLOBAL_trend",
+      "OMI_EXTREME_WAVE_BALTIC_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_BLKSEA_recent_changes",
+      "OMI_EXTREME_WAVE_BLKSEA_wave_power",
+      "OMI_EXTREME_WAVE_IBI_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_MEDSEA_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_NORTHWESTSHELF_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WMF_MEDSEA_area_averaged_mean",
+      "OMI_HEALTH_BLOOM_BALTIC_spatiotemporal_coverage",
+      "OMI_HEALTH_CHL_ARCTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_ATLANTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_ATLANTIC_OCEANCOLOUR_eutrophication",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_nag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_npg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_sag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_spg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_trend",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_cod_volume",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_bottom_salinity_arkona_bornholm",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_sto2tz_gotland"
+    ],
+    "summary": "Concise summarised OMI products distilling ocean state into time-series indicators — trend monitoring, annual reporting, AMOC and circulation indices, sea-ice transport, ocean heat content. Updated annually; not raw data."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "climatology",
+      "long-term mean"
+    ],
+    "group_id": "extreme-events-and-anomalies",
+    "group_title": "Marine Extreme Events and Anomalies",
+    "include_when_query_mentions": [
+      "extreme",
+      "heatwave",
+      "marine heatwave",
+      "mhw",
+      "extreme wave",
+      "extreme sea level",
+      "anomaly",
+      "anomaly index"
+    ],
+    "product_ids": [
+      "OMI_EXTREME_CLIMVAR_PACIFIC_npgo_sla_eof_mode_projection",
+      "OMI_EXTREME_MHW_ARCTIC_area_averaged_anomalies",
+      "OMI_EXTREME_SL_BALTIC_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_IBI_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_MEDSEA_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SL_NORTHWESTSHELF_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_BALTIC_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_IBI_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_MEDSEA_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_NORTHWESTSHELF_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_STATE_GLOBAL_trend",
+      "OMI_EXTREME_WAVE_BALTIC_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_BLKSEA_recent_changes",
+      "OMI_EXTREME_WAVE_BLKSEA_wave_power",
+      "OMI_EXTREME_WAVE_IBI_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_MEDSEA_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_NORTHWESTSHELF_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WMF_MEDSEA_area_averaged_mean"
+    ],
+    "summary": "OMI products tracking marine heatwaves, extreme sea-level events, extreme wave events, and other cross-domain anomaly diagnostics."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "short-range forecast"
+    ],
+    "group_id": "climate-change-indicators",
+    "group_title": "Climate-Change Ocean Indicators (OMI_CLIMATE_*)",
+    "include_when_query_mentions": [
+      "sea level rise",
+      "sea-level rise rate",
+      "ocean warming",
+      "ocean heat content",
+      "ohc",
+      "freshwater content",
+      "freshwater content trend",
+      "climate trend"
+    ],
+    "product_ids": [
+      "OMI_CLIMATE_OFC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_2000",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_300",
+      "OMI_CLIMATE_OHC_GLOBAL_area_averaged_anomalies_0_700",
+      "OMI_CLIMATE_OHC_GLOBAL_trend",
+      "OMI_CLIMATE_OHC_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_OSC_MEDSEA_volume_mean",
+      "OMI_CLIMATE_SI_ARCTIC_transport",
+      "OMI_CLIMATE_SI_BALTIC_extent",
+      "OMI_CLIMATE_SI_BALTIC_volume",
+      "OMI_CLIMATE_SL_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_EUROPE_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_GLOBAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_GLOBAL_regional_trends",
+      "OMI_CLIMATE_SL_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_trend",
+      "OMI_CLIMATE_SST_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IBI_trend",
+      "OMI_CLIMATE_SST_IST_ARCTIC_anomaly",
+      "OMI_CLIMATE_SST_IST_ARCTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IST_ARCTIC_trend",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Stz_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Ttz_trend",
+      "OMI_CLIMATE_TEMPSAL_IBI_extreme_var_mean_and_anomaly",
+      "OMI_CLIMATE_THSL_GLOBAL_area_averaged_anomalies_0_2000",
+      "OMI_CLIMATE_THSL_GLOBAL_area_averaged_anomalies_0_700",
+      "OMI_CLIMATE_THSL_GLOBAL_trend"
+    ],
+    "summary": "OMI products tracking long-term climate-change signatures — sea-level rise rate, ocean warming, ocean heat content, freshwater content trends."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "physics only",
+      "pure salinity"
+    ],
+    "group_id": "fisheries-and-ecosystem-support",
+    "group_title": "Fisheries and Marine Ecosystem Support",
+    "include_when_query_mentions": [
+      "fisheries",
+      "ecosystem",
+      "ecosystem health",
+      "aquaculture",
+      "habitat",
+      "habitat suitability",
+      "primary production",
+      "primary productivity",
+      "chlorophyll",
+      "oxygen",
+      "eutrophication",
+      "hypoxia"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_BGC_002_004",
+      "ARCTIC_MULTIYEAR_BGC_002_005",
+      "BALTICSEA_ANALYSISFORECAST_BGC_003_007",
+      "BALTICSEA_MULTIYEAR_BGC_003_012",
+      "BLKSEA_ANALYSISFORECAST_BGC_007_010",
+      "BLKSEA_MULTIYEAR_BGC_007_005",
+      "GLOBAL_ANALYSISFORECAST_BGC_001_028",
+      "GLOBAL_MULTIYEAR_BGC_001_029",
+      "GLOBAL_MULTIYEAR_BGC_001_033",
+      "IBI_ANALYSISFORECAST_BGC_005_004",
+      "IBI_MULTIYEAR_BGC_005_003",
+      "INSITU_GLO_BGC_CARBON_DISCRETE_MY_013_050",
+      "INSITU_GLO_BGC_DISCRETE_MY_013_046",
+      "MEDSEA_ANALYSISFORECAST_BGC_006_014",
+      "MEDSEA_MULTIYEAR_BGC_006_008",
+      "MULTIOBS_GLO_BGC_CARBON_SURFACE_MYNRT_015_008",
+      "MULTIOBS_GLO_BGC_NUTRIENTS_CARBON_PROFILES_MYNRT_015_009",
+      "MULTIOBS_GLO_BGC_SURFACE_NRT_015_016",
+      "MULTIOBS_GLO_BIO_BGC_3D_REP_015_010",
+      "NWSHELF_ANALYSISFORECAST_BGC_004_002",
+      "NWSHELF_MULTIYEAR_BGC_004_011",
+      "OCEANCOLOUR_ARC_BGC_HR_L3_NRT_009_201",
+      "OCEANCOLOUR_ARC_BGC_HR_L4_NRT_009_207",
+      "OCEANCOLOUR_ARC_BGC_L3_MY_009_123",
+      "OCEANCOLOUR_ARC_BGC_L3_NRT_009_121",
+      "OCEANCOLOUR_ARC_BGC_L4_MY_009_124",
+      "OCEANCOLOUR_ARC_BGC_L4_NRT_009_122",
+      "OCEANCOLOUR_ATL_BGC_L3_MY_009_113",
+      "OCEANCOLOUR_ATL_BGC_L3_NRT_009_111",
+      "OCEANCOLOUR_ATL_BGC_L4_MY_009_118",
+      "OCEANCOLOUR_ATL_BGC_L4_NRT_009_116",
+      "OCEANCOLOUR_BAL_BGC_HR_L3_NRT_009_202",
+      "OCEANCOLOUR_BAL_BGC_HR_L4_NRT_009_208",
+      "OCEANCOLOUR_BAL_BGC_L3_MY_009_133",
+      "OCEANCOLOUR_BAL_BGC_L3_NRT_009_131",
+      "OCEANCOLOUR_BAL_BGC_L4_MY_009_134",
+      "OCEANCOLOUR_BAL_BGC_L4_NRT_009_132",
+      "OCEANCOLOUR_BLK_BGC_HR_L3_NRT_009_206",
+      "OCEANCOLOUR_BLK_BGC_HR_L4_NRT_009_212",
+      "OCEANCOLOUR_BLK_BGC_L3_MY_009_153",
+      "OCEANCOLOUR_BLK_BGC_L3_NRT_009_151",
+      "OCEANCOLOUR_BLK_BGC_L4_MY_009_154",
+      "OCEANCOLOUR_BLK_BGC_L4_NRT_009_152",
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_103",
+      "OCEANCOLOUR_GLO_BGC_L3_MY_009_107",
+      "OCEANCOLOUR_GLO_BGC_L3_NRT_009_101",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_104",
+      "OCEANCOLOUR_GLO_BGC_L4_MY_009_108",
+      "OCEANCOLOUR_GLO_BGC_L4_NRT_009_102",
+      "OCEANCOLOUR_IBI_BGC_HR_L3_NRT_009_204",
+      "OCEANCOLOUR_IBI_BGC_HR_L4_NRT_009_210",
+      "OCEANCOLOUR_MED_BGC_HR_L3_NRT_009_205",
+      "OCEANCOLOUR_MED_BGC_HR_L4_NRT_009_211",
+      "OCEANCOLOUR_MED_BGC_L3_MY_009_143",
+      "OCEANCOLOUR_MED_BGC_L3_NRT_009_141",
+      "OCEANCOLOUR_MED_BGC_L4_MY_009_144",
+      "OCEANCOLOUR_MED_BGC_L4_NRT_009_142",
+      "OCEANCOLOUR_NWS_BGC_HR_L3_NRT_009_203",
+      "OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209"
+    ],
+    "summary": "Biological productivity proxies and ecosystem-relevant variables — chlorophyll, oxygen, nutrients, primary production, habitat suitability. Supports fisheries management, aquaculture, and ecosystem health monitoring."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "antarctic"
+    ],
+    "group_id": "arctic-comprehensive",
+    "group_title": "Arctic Ocean — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "arctic",
+      "polar ocean",
+      "high latitude",
+      "comprehensive",
+      "all domains"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_BGC_002_004",
+      "ARCTIC_ANALYSISFORECAST_PHY_002_001",
+      "ARCTIC_ANALYSISFORECAST_PHY_ICE_002_011",
+      "ARCTIC_ANALYSISFORECAST_PHY_TIDE_002_015",
+      "ARCTIC_ANALYSIS_FORECAST_WAV_002_014",
+      "ARCTIC_MULTIYEAR_BGC_002_005",
+      "ARCTIC_MULTIYEAR_PHY_002_003",
+      "ARCTIC_MULTIYEAR_PHY_ICE_002_016",
+      "ARCTIC_MULTIYEAR_WAV_002_013",
+      "ARCTIC_OMI_SI_extent",
+      "ARCTIC_OMI_SI_extent_obs",
+      "ARCTIC_OMI_TEMPSAL_FWC",
+      "INSITU_ARC_PHYBGCWAV_DISCRETE_MYNRT_013_031",
+      "OCEANCOLOUR_ARC_BGC_HR_L3_NRT_009_201",
+      "OCEANCOLOUR_ARC_BGC_HR_L4_NRT_009_207",
+      "OCEANCOLOUR_ARC_BGC_L3_MY_009_123",
+      "OCEANCOLOUR_ARC_BGC_L3_NRT_009_121",
+      "OCEANCOLOUR_ARC_BGC_L4_MY_009_124",
+      "OCEANCOLOUR_ARC_BGC_L4_NRT_009_122",
+      "OMI_CIRCULATION_VOLTRANS_ARCTIC_averaged",
+      "OMI_CLIMATE_SI_ARCTIC_transport",
+      "OMI_CLIMATE_SST_IST_ARCTIC_anomaly",
+      "OMI_CLIMATE_SST_IST_ARCTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IST_ARCTIC_trend",
+      "OMI_EXTREME_MHW_ARCTIC_area_averaged_anomalies",
+      "OMI_HEALTH_CHL_ARCTIC_OCEANCOLOUR_area_averaged_mean",
+      "SEAICE_ARC_PHY_AUTO_L3_MYNRT_011_023",
+      "SEAICE_ARC_PHY_AUTO_L4_MYNRT_011_024",
+      "SEAICE_ARC_PHY_AUTO_L4_MY_011_025",
+      "SEAICE_ARC_PHY_CLIMATE_L3_MY_011_021",
+      "SEAICE_ARC_PHY_CLIMATE_L4_MY_011_016",
+      "SEAICE_ARC_PHY_SST-IST_L3S_NRT_011_022",
+      "SEAICE_ARC_SEAICE_L3_REP_OBSERVATIONS_011_010",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_002",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_007",
+      "SEAICE_ARC_SEAICE_L4_NRT_OBSERVATIONS_011_008",
+      "WIND_ARC_PHY_HR_L3_MY_012_105",
+      "WIND_ARC_PHY_HR_L3_NRT_012_100"
+    ],
+    "summary": "Every Arctic product across physics, biogeochemistry, sea ice, ocean colour, SST, waves, sea level, wind, in-situ, and OMIs — for cross-cutting Arctic queries."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "reanalysis",
+      "historical"
+    ],
+    "group_id": "global-realtime-state",
+    "group_title": "Global Ocean Real-Time State (all domains)",
+    "include_when_query_mentions": [
+      "global real time",
+      "near real-time global state",
+      "global operational",
+      "global state",
+      "ocean state"
+    ],
+    "product_ids": [
+      "GLOBAL_ANALYSISFORECAST_BGC_001_028",
+      "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+      "GLOBAL_ANALYSISFORECAST_WAV_001_027"
+    ],
+    "summary": "Cross-domain global analysis-and-forecast covering physics, biogeochemistry, sea ice, waves, currents — anything operational at global scale."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "forecast",
+      "near real time"
+    ],
+    "group_id": "global-reanalysis-comprehensive",
+    "group_title": "Global Ocean Reanalysis (all domains)",
+    "include_when_query_mentions": [
+      "global reanalysis",
+      "global hindcast",
+      "climate reconstruction",
+      "long record"
+    ],
+    "product_ids": [
+      "GLOBAL_MULTIYEAR_BGC_001_029",
+      "GLOBAL_MULTIYEAR_BGC_001_033",
+      "GLOBAL_MULTIYEAR_PHY_001_030",
+      "GLOBAL_MULTIYEAR_PHY_ENS_001_031",
+      "GLOBAL_MULTIYEAR_WAV_001_032",
+      "WAVE_GLO_PHY_SPC_L3_MY_014_006"
+    ],
+    "summary": "Cross-domain global reanalysis spanning physics, biogeochemistry, sea ice, waves — for long-record climate work and historical hindcasts."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "baltic",
+      "black sea"
+    ],
+    "group_id": "mediterranean-comprehensive",
+    "group_title": "Mediterranean Sea — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "mediterranean",
+      "med sea",
+      "comprehensive",
+      "all domains"
+    ],
+    "product_ids": [
+      "INSITU_MED_PHYBGCWAV_DISCRETE_MYNRT_013_035",
+      "MEDSEA_ANALYSISFORECAST_BGC_006_014",
+      "MEDSEA_ANALYSISFORECAST_PHY_006_013",
+      "MEDSEA_ANALYSISFORECAST_WAV_006_017",
+      "MEDSEA_MULTIYEAR_BGC_006_008",
+      "MEDSEA_MULTIYEAR_PHY_006_004",
+      "MEDSEA_MULTIYEAR_WAV_006_012",
+      "MEDSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "MEDSEA_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "MEDSEA_OMI_TEMPSAL_sst_area_averaged_anomalies",
+      "MEDSEA_OMI_TEMPSAL_sst_trend",
+      "OCEANCOLOUR_MED_BGC_HR_L3_NRT_009_205",
+      "OCEANCOLOUR_MED_BGC_HR_L4_NRT_009_211",
+      "OCEANCOLOUR_MED_BGC_L3_MY_009_143",
+      "OCEANCOLOUR_MED_BGC_L3_NRT_009_141",
+      "OCEANCOLOUR_MED_BGC_L4_MY_009_144",
+      "OCEANCOLOUR_MED_BGC_L4_NRT_009_142",
+      "OMI_CIRCULATION_MOC_MEDSEA_area_averaged_mean",
+      "OMI_CLIMATE_OHC_MEDSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_OSC_MEDSEA_volume_mean",
+      "OMI_CLIMATE_SL_MEDSEA_area_averaged_anomalies",
+      "OMI_EXTREME_SL_MEDSEA_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_MEDSEA_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_MEDSEA_swh_mean_and_anomaly_obs",
+      "OMI_EXTREME_WMF_MEDSEA_area_averaged_mean",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_trend",
+      "SEALEVEL_MED_PHY_MDT_L4_STATIC_008_066",
+      "SST_MED_PHY_L3S_MY_010_042",
+      "SST_MED_PHY_SUBSKIN_L4_NRT_010_036",
+      "SST_MED_SST_L3S_NRT_OBSERVATIONS_010_012",
+      "SST_MED_SST_L4_NRT_OBSERVATIONS_010_004",
+      "SST_MED_SST_L4_REP_OBSERVATIONS_010_021",
+      "WIND_MED_PHY_HR_L3_MY_012_109",
+      "WIND_MED_PHY_HR_L3_NRT_012_104"
+    ],
+    "summary": "Every Mediterranean product across all domains and data types."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic"
+    ],
+    "group_id": "black-sea-comprehensive",
+    "group_title": "Black Sea — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "black sea",
+      "comprehensive",
+      "all domains"
+    ],
+    "product_ids": [
+      "BLKSEA_ANALYSISFORECAST_BGC_007_010",
+      "BLKSEA_ANALYSISFORECAST_PHY_007_001",
+      "BLKSEA_ANALYSISFORECAST_WAV_007_003",
+      "BLKSEA_MULTIYEAR_BGC_007_005",
+      "BLKSEA_MULTIYEAR_PHY_007_004",
+      "BLKSEA_MULTIYEAR_WAV_007_006",
+      "BLKSEA_OMI_HEALTH_oxygen_trend",
+      "BLKSEA_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "BLKSEA_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "BLKSEA_OMI_TEMPSAL_sst_area_averaged_anomalies",
+      "BLKSEA_OMI_TEMPSAL_sst_trend",
+      "INSITU_BLK_PHYBGCWAV_DISCRETE_MYNRT_013_034",
+      "OCEANCOLOUR_BLK_BGC_HR_L3_NRT_009_206",
+      "OCEANCOLOUR_BLK_BGC_HR_L4_NRT_009_212",
+      "OCEANCOLOUR_BLK_BGC_L3_MY_009_153",
+      "OCEANCOLOUR_BLK_BGC_L3_NRT_009_151",
+      "OCEANCOLOUR_BLK_BGC_L4_MY_009_154",
+      "OCEANCOLOUR_BLK_BGC_L4_NRT_009_152",
+      "OMI_CIRCULATION_BOUNDARY_BLKSEA_rim_current_index",
+      "OMI_CIRCULATION_MOC_BLKSEA_area_averaged_mean",
+      "OMI_CLIMATE_OHC_BLKSEA_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_BLKSEA_area_averaged_anomalies",
+      "OMI_EXTREME_WAVE_BLKSEA_recent_changes",
+      "OMI_EXTREME_WAVE_BLKSEA_wave_power",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_trend",
+      "SEALEVEL_BLK_PHY_MDT_L4_STATIC_008_067",
+      "SST_BS_PHY_L3S_MY_010_041",
+      "SST_BS_PHY_SUBSKIN_L4_NRT_010_035",
+      "SST_BS_SST_L3S_NRT_OBSERVATIONS_010_013",
+      "SST_BS_SST_L4_NRT_OBSERVATIONS_010_006",
+      "SST_BS_SST_L4_REP_OBSERVATIONS_010_022",
+      "WIND_BLK_PHY_HR_L3_MY_012_108",
+      "WIND_BLK_PHY_HR_L3_NRT_012_103"
+    ],
+    "summary": "Every Black Sea product across all domains and data types."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "black sea"
+    ],
+    "group_id": "baltic-comprehensive",
+    "group_title": "Baltic Sea — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "baltic",
+      "brackish",
+      "comprehensive",
+      "all domains"
+    ],
+    "product_ids": [
+      "BALTICSEA_ANALYSISFORECAST_BGC_003_007",
+      "BALTICSEA_ANALYSISFORECAST_PHY_003_006",
+      "BALTICSEA_ANALYSISFORECAST_WAV_003_010",
+      "BALTICSEA_MULTIYEAR_BGC_003_012",
+      "BALTICSEA_MULTIYEAR_PHY_003_011",
+      "BALTICSEA_MULTIYEAR_WAV_003_015",
+      "INSITU_BAL_PHYBGCWAV_DISCRETE_MYNRT_013_032",
+      "OCEANCOLOUR_BAL_BGC_HR_L3_NRT_009_202",
+      "OCEANCOLOUR_BAL_BGC_HR_L4_NRT_009_208",
+      "OCEANCOLOUR_BAL_BGC_L3_MY_009_133",
+      "OCEANCOLOUR_BAL_BGC_L3_NRT_009_131",
+      "OCEANCOLOUR_BAL_BGC_L4_MY_009_134",
+      "OCEANCOLOUR_BAL_BGC_L4_NRT_009_132",
+      "OMI_CLIMATE_OFC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_OHC_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SI_BALTIC_extent",
+      "OMI_CLIMATE_SI_BALTIC_volume",
+      "OMI_CLIMATE_SL_BALTIC_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_BAL_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Stz_trend",
+      "OMI_CLIMATE_TEMPSAL_BALTIC_Ttz_trend",
+      "OMI_EXTREME_SL_BALTIC_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_BALTIC_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_BALTIC_swh_mean_and_anomaly_obs",
+      "OMI_HEALTH_BLOOM_BALTIC_spatiotemporal_coverage",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_trend",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_cod_volume",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_bottom_salinity_arkona_bornholm",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_sto2tz_gotland",
+      "SEAICE_BAL_PHY_L4_MY_011_019",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_004",
+      "SEAICE_BAL_SEAICE_L4_NRT_OBSERVATIONS_011_011",
+      "SST_BAL_PHY_L3S_MY_010_040",
+      "SST_BAL_PHY_SUBSKIN_L4_NRT_010_034",
+      "SST_BAL_SST_L3S_NRT_OBSERVATIONS_010_032",
+      "SST_BAL_SST_L4_NRT_OBSERVATIONS_010_007_b",
+      "SST_BAL_SST_L4_REP_OBSERVATIONS_010_016",
+      "WIND_BAL_PHY_HR_L3_MY_012_107",
+      "WIND_BAL_PHY_HR_L3_NRT_012_102"
+    ],
+    "summary": "Every Baltic product across all domains and data types."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "time series",
+      "variability"
+    ],
+    "group_id": "bathymetry-and-static-fields",
+    "group_title": "Bathymetry and Static Ocean Fields",
+    "include_when_query_mentions": [
+      "bathymetry",
+      "seafloor topography",
+      "ocean bottom depth",
+      "hydrographic chart",
+      "mean dynamic topography",
+      "MDT"
+    ],
+    "product_ids": [
+      "BATHYMETRY_GLO_PHY_COASTAL_L4_MY_016_001",
+      "SEALEVEL_BLK_PHY_MDT_L4_STATIC_008_067",
+      "SEALEVEL_EUR_PHY_MDT_L4_STATIC_008_070",
+      "SEALEVEL_GLO_PHY_MDT_008_063",
+      "SEALEVEL_MED_PHY_MDT_L4_STATIC_008_066"
+    ],
+    "summary": "Time-independent bathymetry and seafloor-topography products, plus Mean Dynamic Topography (MDT) reference fields used as the static baseline for sea-level altimetry products."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic",
+      "black sea"
+    ],
+    "group_id": "ibi-comprehensive",
+    "group_title": "Iberia-Biscay-Ireland — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "iberia",
+      "biscay",
+      "ireland",
+      "ibi",
+      "atlantic shelf"
+    ],
+    "product_ids": [
+      "IBI_ANALYSISFORECAST_BGC_005_004",
+      "IBI_ANALYSISFORECAST_PHY_005_001",
+      "IBI_ANALYSISFORECAST_WAV_005_005",
+      "IBI_MULTIYEAR_BGC_005_003",
+      "IBI_MULTIYEAR_PHY_005_002",
+      "IBI_MULTIYEAR_WAV_005_006",
+      "IBI_OMI_CURRENTS_cui",
+      "IBI_OMI_SEASTATE_extreme_var_swh_mean_and_anomaly",
+      "IBI_OMI_SEASTATE_swi",
+      "IBI_OMI_WMHE_mow",
+      "INSITU_IBI_PHYBGCWAV_DISCRETE_MYNRT_013_033",
+      "OCEANCOLOUR_IBI_BGC_HR_L3_NRT_009_204",
+      "OCEANCOLOUR_IBI_BGC_HR_L4_NRT_009_210",
+      "OMI_CIRCULATION_VOLTRANS_IBI_section_integrated_anomalies",
+      "OMI_CLIMATE_OHC_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SL_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IBI_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_IBI_trend",
+      "OMI_CLIMATE_TEMPSAL_IBI_extreme_var_mean_and_anomaly",
+      "OMI_EXTREME_SL_IBI_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_IBI_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_IBI_swh_mean_and_anomaly_obs"
+    ],
+    "summary": "Every IBI product across physics, biogeochemistry, waves, ocean colour, SST, sea level, wind, in-situ observations, and OMIs."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "mediterranean",
+      "baltic",
+      "ibi"
+    ],
+    "group_id": "nwshelf-comprehensive",
+    "group_title": "European North-West Shelf — comprehensive bundle (all domains)",
+    "include_when_query_mentions": [
+      "north-west shelf",
+      "north west shelf",
+      "north sea",
+      "english channel"
+    ],
+    "product_ids": [
+      "INSITU_NWS_PHYBGCWAV_DISCRETE_MYNRT_013_036",
+      "NORTHWESTSHELF_OMI_TEMPSAL_extreme_var_temp_mean_and_anomaly",
+      "NWSHELF_ANALYSISFORECAST_BGC_004_002",
+      "NWSHELF_ANALYSISFORECAST_PHY_004_013",
+      "NWSHELF_ANALYSISFORECAST_PHY_LR_004_001",
+      "NWSHELF_ANALYSISFORECAST_WAV_004_014",
+      "NWSHELF_MULTIYEAR_BGC_004_011",
+      "NWSHELF_MULTIYEAR_PHY_004_009",
+      "NWSHELF_REANALYSIS_WAV_004_015",
+      "OCEANCOLOUR_NWS_BGC_HR_L3_NRT_009_203",
+      "OCEANCOLOUR_NWS_BGC_HR_L4_NRT_009_209",
+      "OMI_CLIMATE_SL_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_area_averaged_anomalies",
+      "OMI_CLIMATE_SST_NORTHWESTSHELF_trend",
+      "OMI_EXTREME_SL_NORTHWESTSHELF_slev_mean_and_anomaly_obs",
+      "OMI_EXTREME_SST_NORTHWESTSHELF_sst_mean_and_anomaly_obs",
+      "OMI_EXTREME_WAVE_NORTHWESTSHELF_swh_mean_and_anomaly_obs"
+    ],
+    "summary": "Every North-West Shelf product across physics, biogeochemistry, waves, ocean colour, SST, sea level, in-situ observations, and OMIs."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "nutrient only",
+      "oxygen only"
+    ],
+    "group_id": "ocean-acidification-monitoring",
+    "group_title": "Ocean Acidification and Carbonate System",
+    "include_when_query_mentions": [
+      "ocean acidification",
+      "pH",
+      "pCO2",
+      "dissolved inorganic carbon",
+      "alkalinity",
+      "CO2 flux",
+      "carbonate system"
+    ],
+    "product_ids": [
+      "ARCTIC_ANALYSISFORECAST_BGC_002_004",
+      "ARCTIC_MULTIYEAR_BGC_002_005",
+      "BALTICSEA_ANALYSISFORECAST_BGC_003_007",
+      "BALTICSEA_MULTIYEAR_BGC_003_012",
+      "BLKSEA_ANALYSISFORECAST_BGC_007_010",
+      "BLKSEA_MULTIYEAR_BGC_007_005",
+      "BLKSEA_OMI_HEALTH_oxygen_trend",
+      "GLOBAL_ANALYSISFORECAST_BGC_001_028",
+      "GLOBAL_MULTIYEAR_BGC_001_029",
+      "GLOBAL_MULTIYEAR_BGC_001_033",
+      "GLOBAL_OMI_HEALTH_carbon_co2_flux_integrated",
+      "GLOBAL_OMI_HEALTH_carbon_ph_area_averaged",
+      "GLOBAL_OMI_HEALTH_carbon_ph_trend",
+      "IBI_ANALYSISFORECAST_BGC_005_004",
+      "IBI_MULTIYEAR_BGC_005_003",
+      "MEDSEA_ANALYSISFORECAST_BGC_006_014",
+      "MEDSEA_MULTIYEAR_BGC_006_008",
+      "NWSHELF_ANALYSISFORECAST_BGC_004_002",
+      "NWSHELF_MULTIYEAR_BGC_004_011",
+      "OMI_HEALTH_BLOOM_BALTIC_spatiotemporal_coverage",
+      "OMI_HEALTH_CHL_ARCTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_ATLANTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_ATLANTIC_OCEANCOLOUR_eutrophication",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BALTIC_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_BLKSEA_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_nag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_npg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_sag_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_oligo_spg_area_mean",
+      "OMI_HEALTH_CHL_GLOBAL_OCEANCOLOUR_trend",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_area_averaged_mean",
+      "OMI_HEALTH_CHL_MEDSEA_OCEANCOLOUR_trend",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_cod_volume",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_bottom_salinity_arkona_bornholm",
+      "OMI_HEALTH_TEMPSALOXY_BALTIC_mbi_sto2tz_gotland"
+    ],
+    "summary": "Datasets and indicators focused on pH, dissolved inorganic carbon, alkalinity, pCO2, and air-sea CO2 fluxes — for ocean acidification and carbon-uptake studies."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "small-scale currents",
+      "regional eddies"
+    ],
+    "group_id": "ocean-circulation-indices",
+    "group_title": "Major Ocean Circulation Indices",
+    "include_when_query_mentions": [
+      "AMOC",
+      "Atlantic overturning circulation",
+      "Gulf Stream",
+      "volume transport",
+      "circulation index",
+      "MOC"
+    ],
+    "product_ids": [
+      "GLOBAL_OMI_NATLANTIC_amoc_26N_profile",
+      "GLOBAL_OMI_NATLANTIC_amoc_max26N_timeseries",
+      "OMI_CIRCULATION_BOUNDARY_ATLANTIC_gulf_stream_destabilization_point",
+      "OMI_CIRCULATION_BOUNDARY_BLKSEA_rim_current_index",
+      "OMI_CIRCULATION_BOUNDARY_PACIFIC_kuroshio_phase_area_averaged",
+      "OMI_CIRCULATION_MOC_BLKSEA_area_averaged_mean",
+      "OMI_CIRCULATION_MOC_MEDSEA_area_averaged_mean",
+      "OMI_CIRCULATION_VOLTRANS_ARCTIC_averaged",
+      "OMI_CIRCULATION_VOLTRANS_IBI_section_integrated_anomalies"
+    ],
+    "summary": "Indicators describing large-scale ocean circulation — AMOC, Gulf Stream stability, volume transports — for climate diagnostics."
+  },
+  {
+    "exclude_when_query_mentions": [
+      "global wind"
+    ],
+    "group_id": "wind-regional",
+    "group_title": "Regional Surface Wind",
+    "include_when_query_mentions": [
+      "regional wind",
+      "Mediterranean wind",
+      "Baltic wind",
+      "Black Sea wind",
+      "Arctic wind",
+      "high-resolution wind"
+    ],
+    "product_ids": [
+      "WIND_ARC_PHY_HR_L3_MY_012_105",
+      "WIND_ARC_PHY_HR_L3_NRT_012_100",
+      "WIND_ATL_PHY_HR_L3_MY_012_106",
+      "WIND_ATL_PHY_HR_L3_NRT_012_101",
+      "WIND_BAL_PHY_HR_L3_MY_012_107",
+      "WIND_BAL_PHY_HR_L3_NRT_012_102",
+      "WIND_BLK_PHY_HR_L3_MY_012_108",
+      "WIND_BLK_PHY_HR_L3_NRT_012_103",
+      "WIND_MED_PHY_HR_L3_MY_012_109",
+      "WIND_MED_PHY_HR_L3_NRT_012_104"
+    ],
+    "summary": "High-resolution regional surface wind from scatterometer for European seas (Arctic, Atlantic, Baltic, Black Sea, Mediterranean)."
+  }
+]

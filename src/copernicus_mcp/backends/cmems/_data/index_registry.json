@@ -1,0 +1,44 @@
+{
+  "cmems_obs-ins_glo_bgc-car_my_glodap-gridded_irr": {
+    "dataset_id": "cmems_obs-ins_glo_bgc-car_my_glodap-gridded_irr",
+    "strategy": "file_based",
+    "index_filename": "index_file.txt",
+    "format_id": "insitu_index_file_v3",
+    "discovered_via": "bundled"
+  },
+  "cmems_obs-ins_glo_bgc-car_my_glodap-obs_irr": {
+    "dataset_id": "cmems_obs-ins_glo_bgc-car_my_glodap-obs_irr",
+    "strategy": "file_based",
+    "index_filename": "index_file.txt",
+    "format_id": "insitu_index_file_v3",
+    "discovered_via": "bundled"
+  },
+  "cmems_obs-ins_glo_bgc-car_my_socat-obs_irr": {
+    "dataset_id": "cmems_obs-ins_glo_bgc-car_my_socat-obs_irr",
+    "strategy": "file_based",
+    "index_filename": "index_file.txt",
+    "format_id": "insitu_index_file_v3",
+    "discovered_via": "bundled"
+  },
+  "cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i": {
+    "dataset_id": "cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i",
+    "strategy": "file_based",
+    "index_filename": "canyon_index_file.txt",
+    "format_id": "multiobs_canyon_v1",
+    "discovered_via": "bundled"
+  },
+  "cmems_obs-ins_glo_phy-temp-sal_my_cora_irr": {
+    "dataset_id": "cmems_obs-ins_glo_phy-temp-sal_my_cora_irr",
+    "strategy": "path_based",
+    "index_filename": null,
+    "format_id": "cora_path_v1",
+    "discovered_via": "bundled"
+  },
+  "cmems_obs-ins_glo_phy-temp-sal_my_easycora_irr": {
+    "dataset_id": "cmems_obs-ins_glo_phy-temp-sal_my_easycora_irr",
+    "strategy": "path_based",
+    "index_filename": null,
+    "format_id": "easycora_path_v1",
+    "discovered_via": "bundled"
+  }
+}

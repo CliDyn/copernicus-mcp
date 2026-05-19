@@ -1,0 +1,52 @@
+{
+  "service": "copernicus-mcp",
+  "version": "0.0.1",
+  "user": {
+    "username": "alice@example.org",
+    "display_name": "Alice"
+  },
+  "dataset": {
+    "dataset_id": "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m",
+    "product_id": "GLOBAL_ANALYSISFORECAST_PHY_001_024",
+    "title": "Global Ocean Physics Analysis and Forecast",
+    "version": "202406",
+    "variables": ["thetao", "so", "uo", "vo", "zos"],
+    "spatial_extent": {
+      "min_lon": -180.0,
+      "max_lon": 180.0,
+      "min_lat": -80.0,
+      "max_lat": 90.0
+    },
+    "temporal_extent": {
+      "start": "2024-01-01T00:00:00Z",
+      "end": "2026-04-27T00:00:00Z"
+    }
+  },
+  "request": {
+    "operation": "subset",
+    "bbox": [0.0, 0.0, 1.0, 1.0],
+    "time_window": ["2024-01-01", "2024-01-02"],
+    "selected_variables": ["thetao"],
+    "depth_range": [0.0, 5.0]
+  },
+  "response": {
+    "status": "successful",
+    "estimated_size_mb": 2.094,
+    "service_url": "https://my.cmems-du.eu/motu-web/Motu",
+    "endpoints": [
+      "https://stac.marine.copernicus.eu/",
+      "https://data.marine.copernicus.eu/"
+    ],
+    "elapsed_ms": 5612
+  },
+  "files": [
+    {
+      "filename": "thetao_2024-01-01.nc",
+      "size_bytes": 23846,
+      "format": "netcdf"
+    }
+  ],
+  "tags": ["ocean", "temperature", "forecast", "global"],
+  "request_id": "req-001",
+  "trace_id": "trc-abc"
+}

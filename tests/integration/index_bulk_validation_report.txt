@@ -1,0 +1,56 @@
+# CMEMS Layer 2 Bulk Validation Report
+
+corpus_root: discovery-corpus/local-indices
+dataset_count: 4
+
+## Per-dataset summary
+
+(parse_ms is informational and machine-dependent; ignore in diffs.)
+
+### cmems_obs-ins_glo_bgc-car_my_glodap-gridded_irr
+- index_file: index_file.txt
+- total_rows: 10
+- parse_ms: ~5
+- out_of_range_bbox_matched: 0
+- mid_band_bbox: skipped:uniform_row_bbox
+- mid_band_bbox_matched: n/a
+- mid_band_time: skipped:uniform_row_time
+- mid_band_time_matched: n/a
+- variable_picked: CL
+- variable_filter_matched: 10
+
+### cmems_obs-ins_glo_bgc-car_my_glodap-obs_irr
+- index_file: index_file.txt
+- total_rows: 131
+- parse_ms: ~3
+- out_of_range_bbox_matched: 0
+- mid_band_bbox: (-90.00,-36.31,89.99,47.90)
+- mid_band_bbox_matched: 67
+- mid_band_time: (1984-11-21T00:00:00Z,2009-07-19T00:00:00Z)
+- mid_band_time_matched: 107
+- variable_picked: ALKW
+- variable_filter_matched: 131
+
+### cmems_obs-ins_glo_bgc-car_my_socat-obs_irr
+- index_file: index_file.txt
+- total_rows: 305
+- parse_ms: ~4
+- out_of_range_bbox_matched: 0
+- mid_band_bbox: (-90.00,-36.55,90.00,47.82)
+- mid_band_bbox_matched: 177
+- mid_band_time: (1974-08-18T01:54:36Z,2008-04-07T09:43:50Z)
+- mid_band_time_matched: 148
+- variable_picked: FCO2
+- variable_filter_matched: 305
+
+### cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i
+- index_file: canyon_index_file.txt
+- total_rows: 284
+- parse_ms: ~493
+- out_of_range_bbox_matched: 0
+- mid_band_bbox: skipped:catalogue_extent_missing
+- mid_band_bbox_matched: n/a
+- mid_band_time: (2008-08-04T23:40:08Z,2020-05-28T00:54:42Z)
+- mid_band_time_matched: 142
+- variable_picked: TEMP
+- variable_filter_matched: 284

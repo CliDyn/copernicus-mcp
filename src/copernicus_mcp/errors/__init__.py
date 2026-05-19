@@ -1,0 +1,46 @@
+from copernicus_mcp.errors.classes import (
+    AuthError,
+    BackendError,
+    CacheError,
+    CopernicusMcpError,
+    CoverageUnavailableError,
+    NetworkError,
+    NotFoundError,
+    OperationCancelledError,
+    QuotaError,
+    TermsNotAcceptedError,
+    TimeoutError,
+    ValidationError,
+)
+from copernicus_mcp.errors.records import (
+    ErrorClass,
+    ErrorRecord,
+    RecoveryAction,
+    Severity,
+    build_error_record,
+    new_error_id,
+)
+from copernicus_mcp.errors.sanitiser import REDACTED, Sanitiser
+
+__all__ = [
+    "AuthError",
+    "BackendError",
+    "CacheError",
+    "CopernicusMcpError",
+    "CoverageUnavailableError",
+    "ErrorClass",
+    "ErrorRecord",
+    "NetworkError",
+    "NotFoundError",
+    "OperationCancelledError",
+    "QuotaError",
+    "REDACTED",
+    "RecoveryAction",
+    "Sanitiser",
+    "Severity",
+    "TermsNotAcceptedError",
+    "TimeoutError",
+    "ValidationError",
+    "build_error_record",
+    "new_error_id",
+]

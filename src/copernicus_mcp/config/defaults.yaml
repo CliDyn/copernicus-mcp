@@ -1,0 +1,39 @@
+# Default configuration for copernicus-mcp.
+# This file mirrors the Pydantic defaults in schema.py for human reference.
+# Override via ~/.config/copernicus-mcp/config.yaml, ~/.copernicus-mcp.yaml,
+# an explicit --config path, env vars, or CLI flags.
+server:
+  name: copernicus-mcp
+  log_level: INFO
+  transport: stdio
+
+storage:
+  # cache_directory and state_database intentionally omitted — the
+  # Pydantic schema computes them per-OS via ``platformdirs``.
+  # Override with ``COPERNICUS_MCP_CACHE_DIR`` / ``COPERNICUS_MCP_STATE_DB``
+  # env vars, ``--cache-dir`` CLI flag, or an explicit user config file.
+  cache_size_limit_gb: 50.0
+  cache_eviction_policy: lru
+
+http:
+  default_timeout_seconds: 60
+  default_retry_max_attempts: 5
+  default_retry_base_delay_seconds: 1.0
+  default_retry_max_delay_seconds: 60.0
+
+cache:
+  search_results_ttl_seconds: 3600
+  metadata_ttl_seconds: 86400
+
+budget:
+  cmems_max_concurrent_subset_operations: 2
+  cmems_per_request_size_warning_gb: 1.0
+  cmems_estimate_timeout_seconds: 30.0
+
+observability:
+  structured_logging: true
+  log_format: json
+
+enabled_backends:
+  - cmems
+  - cds

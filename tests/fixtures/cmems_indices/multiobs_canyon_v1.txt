@@ -1,0 +1,56 @@
+# title : Nutrient and Carbon profiles vertical distribution
+# project : CMEMS - MULTIOBS Thematic Assembly Center
+# product_id : MULTIOBS_GLO_BGC_NUTRIENTS_CARBON_PROFILES_MYNRT_015_009
+# dataset_id : cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i
+# date of update: 20260424
+file_name,date,wmo,n_cycle,longitude,latitude,temp_dt_mode,psal_dt_mode,doxy_dt_mode,date_update
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200209.nc,2002-09-08 23:02:51,4900093,1,-157.987,22.882,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200209.nc,2002-09-19 12:00:41,4900093,2,-157.812,22.91,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200209.nc,2002-09-30 01:30:00,4900093,3,-157.416,22.887,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200210.nc,2002-10-10 14:18:32,4900093,4,-157.025,22.803,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200210.nc,2002-10-21 03:05:10,4900093,5,-156.831,22.736,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200210.nc,2002-10-31 16:22:01,4900093,6,-156.877,22.571,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200211.nc,2002-11-11 05:25:41,4900093,7,-156.846,22.528,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200211.nc,2002-11-21 18:09:23,4900093,8,-156.653,22.156,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200212.nc,2002-12-02 06:37:14,4900093,9,-156.351,21.982,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200212.nc,2002-12-12 20:18:39,4900093,10,-156.301,21.769,D,D,D,20241004
+2002/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200212.nc,2002-12-23 09:05:01,4900093,11,-156.271,21.788,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200301.nc,2003-01-02 22:40:33,4900093,12,-156.502,21.957,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200301.nc,2003-01-13 10:44:58,4900093,13,-156.708,21.813,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200301.nc,2003-01-15 03:56:11,5900245,1,152.238,-47.889,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200301.nc,2003-01-24 00:45:27,4900093,14,-156.842,21.54,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200301.nc,2003-01-25 17:10:34,5900245,2,152.08,-47.262,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-03 13:09:09,4900093,15,-156.307,21.356,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-05 05:29:22,5900245,3,152.176,-47.248,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-14 02:33:43,4900093,16,-155.658,21.675,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-15 18:34:40,5900245,4,152.276,-47.381,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-24 14:36:54,4900093,17,-154.746,21.722,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200302.nc,2003-02-26 06:51:43,5900245,5,152.542,-47.117,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200303.nc,2003-03-07 03:57:33,4900093,18,-154.898,22.111,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200303.nc,2003-03-08 20:00:08,5900245,6,153.079,-46.697,D,D,D,20241004
+2003/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_200303.nc,2003-03-17 17:44:15,4900093,19,-154.782,22.491,D,D,D,20241004
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:18:57,5906479,163,-90.6653,11.6472,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:28:21,2903797,171,17.087034833333334,36.85950866666667,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:35:34,3902332,67,-61.3438,42.6006,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:46:18,4903848,63,17.157464833333332,36.453080666666665,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:48:19,5907146,60,5.3016315,42.87164816666667,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 10:48:19,6990684,61,11.392171666666664,40.72425866666666,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 11:27:15,7901098,92,-164.6804,5.1667,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 11:36:38,4903571,78,-32.4908,19.6845,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 11:57:30,3902695,54,27.64601833333333,33.691945,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 12:04:51,4903752,73,-105.6545,-58.5105,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 12:18:38,2902933,142,139.61865166666666,5.063116666666667,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 12:38:28,7902139,47,22.2601,-55.307,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 12:49:04,1902371,93,-144.55016,49.32282,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 12:58:29,7900885,58,157.396,46.522,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 14:10:00,4903643,177,-44.129493333333336,12.412095,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 16:28:00,2903924,16,-35.89203,-36.24293,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 17:27:00,6904188,160,-32.62401,-7.978181666666667,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 19:32:00,5905556,146,-145.75954333333334,-52.850593333333336,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 19:43:00,5907065,51,62.007891666666666,-43.715525,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 19:55:00,1902681,75,82.489005,6.403053333333333,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 20:42:00,7902292,22,-94.00847333333331,-19.876455,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 21:27:00,6904189,158,-19.27403333333333,-1.950655,R,R,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 21:54:00,2904041,19,13.42168,38.87387,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-23 22:44:00,2904004,22,-65.13548666666667,38.90794833333333,A,A,A,20260424
+2026/cmems_obs-mob_glo_bgc-nut-car_mynrt_irr_i_202604.nc,2026-04-24 01:32:00,6902891,84,174.82498166666667,-63.367781666666666,A,A,A,20260424

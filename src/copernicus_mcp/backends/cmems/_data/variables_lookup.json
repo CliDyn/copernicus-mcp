@@ -1,0 +1,67 @@
+{
+  "_comment": "T-CMEMS-HIER-001: SDK short name → CF-style canonical name. Curated. Seeded from the empirical T-CMEMS-CAT-000 smoke (2026-05-13) covering the most common CMEMS variables. Unknown short names fall back to themselves at build time — never silently dropped. Extending this file is the cheap path when domain coverage <85% — see T-CMEMS-HIER-001 acceptance threshold.",
+
+  "thetao": "sea_water_potential_temperature",
+  "to": "sea_water_potential_temperature",
+  "votemper": "sea_water_potential_temperature",
+  "sst": "sea_surface_temperature",
+  "analysed_sst": "sea_surface_temperature",
+
+  "so": "sea_water_salinity",
+  "vosaline": "sea_water_salinity",
+  "sss": "sea_surface_salinity",
+
+  "uo": "eastward_sea_water_velocity",
+  "vozocrtx": "eastward_sea_water_velocity",
+  "vo": "northward_sea_water_velocity",
+  "vomecrty": "northward_sea_water_velocity",
+  "wo": "vertical_sea_water_velocity",
+
+  "zos": "sea_surface_height_above_geoid",
+  "sla": "sea_surface_height_above_geoid",
+  "adt": "sea_surface_height_above_geoid",
+
+  "mlotst": "mixed_layer_thickness",
+  "bottomT": "sea_water_temperature_at_sea_floor",
+
+  "siextents_cglo": "sea_ice_extent",
+  "siextents_glor": "sea_ice_extent",
+  "siextents_mean": "sea_ice_extent",
+  "siextents_ens_mean": "sea_ice_extent",
+  "siconc": "sea_ice_area_fraction",
+  "sithick": "sea_ice_thickness",
+  "sisnthick": "snow_on_sea_ice_thickness",
+  "siu": "eastward_sea_ice_velocity",
+  "siv": "northward_sea_ice_velocity",
+
+  "VHM0": "sea_surface_wave_significant_height",
+  "VTM10": "sea_surface_wave_mean_period",
+  "VMDR": "sea_surface_wave_from_direction",
+  "VTPK": "sea_surface_wave_peak_period",
+
+  "chl": "mass_concentration_of_chlorophyll_a_in_sea_water",
+  "CHL": "mass_concentration_of_chlorophyll_a_in_sea_water",
+  "chlor_a": "mass_concentration_of_chlorophyll_a_in_sea_water",
+  "nppv": "net_primary_production",
+  "o2": "mole_concentration_of_dissolved_molecular_oxygen_in_sea_water",
+  "no3": "mole_concentration_of_nitrate_in_sea_water",
+  "po4": "mole_concentration_of_phosphate_in_sea_water",
+  "si": "mole_concentration_of_silicate_in_sea_water",
+  "fe": "mole_concentration_of_dissolved_iron_in_sea_water",
+  "phyc": "mole_concentration_of_phytoplankton_expressed_as_carbon_in_sea_water",
+  "spco2": "surface_partial_pressure_of_carbon_dioxide_in_sea_water",
+  "dissic": "mole_concentration_of_dissolved_inorganic_carbon_in_sea_water",
+  "talk": "sea_water_alkalinity_expressed_as_mole_equivalent",
+  "ph": "sea_water_ph_reported_on_total_scale",
+
+  "Rrs_412": "remote_sensing_reflectance",
+  "Rrs_443": "remote_sensing_reflectance",
+  "Rrs_490": "remote_sensing_reflectance",
+  "Rrs_555": "remote_sensing_reflectance",
+  "Rrs_670": "remote_sensing_reflectance",
+
+  "kd490": "downwelling_diffuse_attenuation_coefficient",
+  "Zsd": "secchi_depth",
+
+  "elevation": "land_elevation_above_sea_floor"
+}
