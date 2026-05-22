@@ -918,7 +918,11 @@ class CmemsBackend(AbstractBackend):
             filename = f"{safe_id}_{short_hash}.nc"
             target_path = staging / filename
             # Defence-in-depth: ensure target stays inside staging.
-            if staging not in target_path.resolve().parents:
+            # Both sides must resolve so a symlinked cache_directory
+            # (e.g. macOS ``/tmp`` → ``/private/tmp``) doesn't trigger
+            # a false positive — ``target_path.resolve()`` would follow
+            # the symlink while an un-resolved ``staging`` would not.
+            if not target_path.resolve().is_relative_to(staging.resolve()):
                 raise BackendError(
                     "internal: target path escaped staging directory",
                     record=build_error_record(

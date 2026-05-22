@@ -162,6 +162,76 @@ async def test_submit_happy_path(foundation, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_succeeds_when_cache_dir_is_symlink(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression: cache_directory being a symlink (e.g. macOS users
+    pointing at ``/tmp/...`` which resolves to ``/private/tmp/...``)
+    used to false-positive the staging-dir path-escape check because
+    ``target_path.resolve()`` followed the symlink while ``staging``
+    did not. Both sides must resolve before the containment check."""
+    real_cache = tmp_path / "real-cache"
+    real_cache.mkdir()
+    linked_cache = tmp_path / "linked-cache"
+    linked_cache.symlink_to(real_cache, target_is_directory=True)
+
+    found, persistence = _make_foundation_with_cache(tmp_path, linked_cache)
+    await persistence.initialise()
+    try:
+        from copernicus_mcp.backends.cmems.backend import CmemsBackend
+
+        _install_fake(
+            monkeypatch,
+            subset_fn=lambda **kw: _make_estimate_response(0.5),
+            write_bytes=b"hello-netcdf",
+        )
+        backend = CmemsBackend(foundation=found, credentials=_creds())
+        result = await backend.submit(_params())
+
+        assert result["status"] == "successful"
+        assert "filepath" in result["result"]
+    finally:
+        await persistence.close()
+
+
+def _make_foundation_with_cache(tmp_path: Path, cache_dir: Path):
+    """Like ``_make_foundation`` but takes an explicit ``cache_dir``."""
+    from copernicus_mcp.auth import CredentialResolver
+    from copernicus_mcp.backends.abstract import FoundationServices
+    from copernicus_mcp.cache import CacheManager
+    from copernicus_mcp.config import ConfigLoader
+    from copernicus_mcp.data_model.coordinator import DataModelCoordinator
+    from copernicus_mcp.data_model.provenance import ProvenanceRecorder
+    from copernicus_mcp.errors.sanitiser import Sanitiser
+    from copernicus_mcp.http import HttpClientFactory
+    from copernicus_mcp.persistence import SqliteBackend
+
+    config = ConfigLoader().load()
+    persistence = SqliteBackend(tmp_path / "state.db")
+    cache = CacheManager(
+        cache_directory=cache_dir,
+        persistence=persistence,
+        size_limit_bytes=10 * 1024 * 1024,
+    )
+    return (
+        FoundationServices(
+            config=config,
+            credential_resolver=CredentialResolver(),
+            http_client_factory=HttpClientFactory(http_config=config.http),
+            persistence=persistence,
+            cache=cache,
+            sanitiser=Sanitiser(),
+            data_model=DataModelCoordinator(persistence=persistence),
+            provenance=ProvenanceRecorder(
+                persistence=persistence,
+                software_versions={"copernicus-mcp": "0.0.1"},
+            ),
+        ),
+        persistence,
+    )
+
+
+@pytest.mark.asyncio
 async def test_submit_idempotent_cache_hit(foundation, monkeypatch) -> None:
     from copernicus_mcp.backends.cmems.backend import CmemsBackend
 

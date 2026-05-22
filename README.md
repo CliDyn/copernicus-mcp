@@ -187,7 +187,7 @@ Full reference: [`docs/setup.md`](docs/setup.md).
 
 ## Status
 
-Latest release: see [releases page](https://github.com/CliDyn/copernicus-mcp/releases) (current: `v0.4.2`). Two backends in production: CMEMS + Climate Data Store family. CDSE, Sentinel Hub, WEkEO planned for subsequent iterations.
+Latest release: see [releases page](https://github.com/CliDyn/copernicus-mcp/releases) (current: `v0.4.3`). Two backends in production: CMEMS + Climate Data Store family. CDSE, Sentinel Hub, WEkEO planned for subsequent iterations.
 
 ---
 
