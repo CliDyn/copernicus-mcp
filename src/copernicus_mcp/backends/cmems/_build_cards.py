@@ -7,7 +7,7 @@ and adds the level-1 card fields: domain, region, data_type,
 lookup table is loaded once from
 ``_data/variables_lookup.json`` and cached.
 
-Sub-plan: internal design notes. Schema lock: same
+Sub-plan: ``the project conventions``. Schema lock: same
 file, level-1 cards table.
 
 NOT imported by ``CmemsBackend`` at runtime. Build-side only.

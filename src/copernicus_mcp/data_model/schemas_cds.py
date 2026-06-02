@@ -1,6 +1,6 @@
 """CDS request schemas (T-CDS-002).
 
- the per-dataset
+Per ``the project research notes`` §6.9.1, the per-dataset
 constraint catalogue is server-side; static validation is limited to
 **structural** checks. ``CdsRetrieveRequest`` accepts any cdsapi-shaped
 ``inputs`` dict (modern structured form OR legacy MARS-keywords form,
@@ -20,6 +20,7 @@ canonical error taxonomy.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -31,6 +32,37 @@ _CDS_FORBID_FROZEN = ConfigDict(extra="forbid", frozen=True)
 # isinstance clarity even though ``isinstance(True, int)`` is True.
 _ALLOWED_LEAF_TYPES: tuple[type, ...] = (str, int, float, bool)
 
+# T-TS-001: ``cdsapi`` requests are flat EXCEPT the ARCO ``*-timeseries``
+# products (reanalysis-era5-land-timeseries, ...), whose required
+# ``location`` point is a nested object. Allow that one key with an exact
+# ``{latitude, longitude}`` finite-number shape; any other nested dict is
+# still rejected.
+_NESTED_DICT_ALLOWLIST: frozenset[str] = frozenset({"location"})
+_LOCATION_KEYS: frozenset[str] = frozenset({"latitude", "longitude"})
+
+
+def _check_location_dict(val: dict[Any, Any], path: str) -> None:
+    """Validate the nested ``location`` point: exactly ``latitude`` and
+    ``longitude`` as finite, non-bool numbers. Reject extra keys outright
+    rather than leaning on the cache-key/sanitiser layer (codex LOW-10)."""
+    if set(val) != _LOCATION_KEYS:
+        # Do NOT echo the caller's keys: CDS estimate/submit forward only each
+        # error's ``msg``/``loc``/``type`` into the ErrorRecord's
+        # ``field_errors`` (never Pydantic's ``input``), so a credential-shaped
+        # key (e.g. ``token=...``) must never appear in ``msg`` (the project conventions inv #2).
+        raise ValueError(
+            f"input {path!r}: must contain exactly 'latitude' and 'longitude'"
+        )
+    for coord in ("latitude", "longitude"):
+        cv = val[coord]
+        if isinstance(cv, bool) or not isinstance(cv, (int, float)):
+            raise ValueError(
+                f"input {path!r}.{coord}: must be a number, got "
+                f"{type(cv).__name__}"
+            )
+        if not math.isfinite(float(cv)):
+            raise ValueError(f"input {path!r}.{coord}: must be finite")
+
 
 def _check_value(val: Any, path: str) -> None:
     """Reject nested dicts, ``None``, and non-primitive list items.
@@ -41,9 +73,12 @@ def _check_value(val: Any, path: str) -> None:
     if val is None:
         raise ValueError(f"input {path!r}: None values are not allowed")
     if isinstance(val, dict):
+        if path in _NESTED_DICT_ALLOWLIST:
+            _check_location_dict(val, path)
+            return
         raise ValueError(
             f"input {path!r}: nested dicts are not allowed; cdsapi "
-            "requires a flat request dict"
+            "requires a flat request dict (only 'location' may be nested)"
         )
     if isinstance(val, list):
         for i, item in enumerate(val):
@@ -83,11 +118,15 @@ class CdsRetrieveRequest(BaseModel):
     dataset_id: str = Field(min_length=1)
     inputs: dict[str, Any] = Field(
         description=(
-            "cdsapi-shaped request dict (variable, year, month, day, "
-            "time, area, pressure_level, ...). WARNING — ``area`` "
-            "ordering: CDS uses ``[north, west, south, east]`` (NWSE), "
-            "OPPOSITE of common GIS ``[west, south, east, north]``. "
-            "Sending the wrong order does not error — it silently "
+            "cdsapi-shaped request dict. Gridded products take "
+            "(variable, year, month, day, time, area, pressure_level, ...); "
+            "the ARCO ``*-timeseries`` products instead take a single point: "
+            "{variable, location: {latitude, longitude}, date: "
+            '"YYYY-MM-DD/YYYY-MM-DD", data_format}. Per-dataset valid fields '
+            "appear in ``cds_describe_dataset``'s ``available_inputs``. "
+            "WARNING — ``area`` ordering: CDS uses ``[north, west, south, "
+            "east]`` (NWSE), OPPOSITE of common GIS ``[west, south, east, "
+            "north]``. Sending the wrong order does not error — it silently "
             "retrieves the wrong region. Mediterranean example "
             "(lon -6..36.5, lat 30..46): area=[46, -6, 30, 36.5]."
         ),

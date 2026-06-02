@@ -9,7 +9,7 @@ server:
 
 storage:
   # cache_directory and state_database intentionally omitted — the
-  # Pydantic schema computes them per-OS via ``platformdirs``.
+  # Pydantic schema computes them per-OS via ``platformdirs`` (T-CDS-019).
   # Override with ``COPERNICUS_MCP_CACHE_DIR`` / ``COPERNICUS_MCP_STATE_DB``
   # env vars, ``--cache-dir`` CLI flag, or an explicit user config file.
   cache_size_limit_gb: 50.0

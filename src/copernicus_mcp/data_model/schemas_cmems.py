@@ -15,6 +15,7 @@ recovery hint.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,6 +23,24 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from copernicus_mcp.common.time import iso8601_utc
 from copernicus_mcp.errors import ValidationError as CmcpValidationError
 from copernicus_mcp.errors.records import build_error_record
+
+# T-TS-006: accept date-only / naive datetimes on the CMEMS subset path and
+# treat them as UTC. The global ``iso8601_utc`` stays strict (codex LOW-9) —
+# this pre-normaliser only tags a tz onto naive input; ``iso8601_utc`` then does
+# the canonical conversion and the strict error for genuinely bad strings.
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_NAIVE_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?")
+
+
+def _ensure_utc_iso(value: str) -> str:
+    if not isinstance(value, str):
+        return value
+    raw = value.strip()
+    if _DATE_ONLY_RE.fullmatch(raw):
+        return f"{raw}T00:00:00Z"
+    if _NAIVE_DATETIME_RE.fullmatch(raw):
+        return raw.replace(" ", "T") + "Z"
+    return raw
 
 _CMEMS_FORBID_FROZEN = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,8 +116,8 @@ class CmemsSubsetRequest(BaseModel):
     maximum_longitude: float = Field(ge=-180.0, le=180.0)
     minimum_latitude: float = Field(ge=-90.0, le=90.0)
     maximum_latitude: float = Field(ge=-90.0, le=90.0)
-    minimum_depth: float = Field(ge=0.0)
-    maximum_depth: float = Field(ge=0.0)
+    minimum_depth: float | None = Field(default=None, ge=0.0)
+    maximum_depth: float | None = Field(default=None, ge=0.0)
 
     start_datetime: str
     end_datetime: str
@@ -108,14 +127,14 @@ class CmemsSubsetRequest(BaseModel):
     )
     service: str | None = None
 
-    file_format: Literal["netcdf", "zarr"] = "netcdf"
+    file_format: Literal["netcdf", "zarr", "csv"] = "netcdf"
     netcdf_compression_level: int = Field(default=1, ge=0, le=9)
 
     @model_validator(mode="after")
     def _normalise_and_check(self) -> CmemsSubsetRequest:
         # Datetime normalisation (also rejects naive inputs).
-        start_norm = iso8601_utc(self.start_datetime)
-        end_norm = iso8601_utc(self.end_datetime)
+        start_norm = iso8601_utc(_ensure_utc_iso(self.start_datetime))
+        end_norm = iso8601_utc(_ensure_utc_iso(self.end_datetime))
 
         if start_norm >= end_norm:
             raise CmcpValidationError(
@@ -157,11 +176,41 @@ class CmemsSubsetRequest(BaseModel):
                 f"maximum_longitude ({self.maximum_longitude})"
             )
 
-        # Depth order.
-        if self.minimum_depth > self.maximum_depth:
+        # Depth order — both bounds are optional (T-TS-006); only compare when
+        # both are present.
+        if (
+            self.minimum_depth is not None
+            and self.maximum_depth is not None
+            and self.minimum_depth > self.maximum_depth
+        ):
             raise CmcpValidationError(
                 f"minimum_depth ({self.minimum_depth}) must be <= "
                 f"maximum_depth ({self.maximum_depth})"
+            )
+
+        # Review M1: csv loads the whole subset into memory via
+        # ``read_dataframe`` — restrict it to a single point so a large area
+        # cannot OOM or slip under the netcdf-based size gate.
+        if self.file_format == "csv" and not (
+            self.minimum_longitude == self.maximum_longitude
+            and self.minimum_latitude == self.maximum_latitude
+        ):
+            raise CmcpValidationError(
+                "file_format='csv' is supported only for a single point",
+                record=build_error_record(
+                    "ValidationError",
+                    message=(
+                        "file_format='csv' is supported only for a single point "
+                        "(set min==max longitude and latitude); use 'netcdf' for "
+                        "an area"
+                    ),
+                    recovery_action="modify_request_parameters",
+                    next_action_hint=(
+                        "Set minimum_longitude==maximum_longitude and "
+                        "minimum_latitude==maximum_latitude, or use "
+                        "file_format='netcdf'."
+                    ),
+                ),
             )
 
         # Persist normalised datetimes so cache keys are deterministic.

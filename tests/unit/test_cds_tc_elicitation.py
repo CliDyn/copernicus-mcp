@@ -4,7 +4,7 @@ The CDS / ADS / EWDS server returns a per-dataset T&C-not-accepted
 error when the user has not yet accepted every required licence on
 the dataset's web page. The empirical error shape (T-CDS-000 smoke
 F-2 in 2026) differs from the form documented in
-; we parse the actual
+``the project research notes`` §6.6.2; we parse the actual
 HTTP 403 body:
 
     user didn't accept all required site policies

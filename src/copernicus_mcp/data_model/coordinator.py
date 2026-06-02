@@ -57,7 +57,12 @@ class DataModelCoordinator:
         }
         format_options = {
             "file_format": req.file_format,
-            "netcdf_compression_level": req.netcdf_compression_level,
+            # csv ignores compression (the csv download path strips it before
+            # read_dataframe) — keep the key independent of it so two equal
+            # csv requests dedupe (the project conventions inv #6).
+            "netcdf_compression_level": (
+                None if req.file_format == "csv" else req.netcdf_compression_level
+            ),
             "coordinates_selection_method": req.coordinates_selection_method,
             "service": req.service,
             "dataset_part": req.dataset_part,
@@ -78,7 +83,7 @@ class DataModelCoordinator:
     def cache_key_for_cds_retrieve(self, req: CdsRetrieveRequest) -> str:
         """Build a deterministic cache key for a CDS retrieve request.
 
-        the per-dataset
+        Per ``the project research notes`` §6.9.1 the per-dataset
         ``inputs`` dict is opaque — keys differ across datasets and cannot
         be statically enumerated. We pack the dict into the
         ``format_options`` bucket of ``construct_cache_key`` after
@@ -105,7 +110,7 @@ class DataModelCoordinator:
         key) do NOT collapse and therefore can change the digest. They
         do not leak the literal value into the returned cache_key
         (which is a sha-256 prefix). Documented residual risk per
-         accepted-residuals.
+        ``docs/pending_codex_review.md`` accepted-residuals.
         """
         return construct_cache_key(
             backend=_CDS_BACKEND,

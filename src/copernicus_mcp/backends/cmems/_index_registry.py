@@ -149,7 +149,7 @@ class IndexRegistry:
 
         # Wrap the SDK probe through the store's wrap_sdk_error helper so
         # credentials embedded in raw SDK exception messages cannot leak
-        # (the credential-isolation invariant; cr round-1 H2).
+        # (the project conventions invariant 2; cr round-1 H2).
         try:
             response = await asyncio.to_thread(
                 marine.get,  # type: ignore[attr-defined]

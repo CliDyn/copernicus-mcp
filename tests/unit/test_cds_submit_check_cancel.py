@@ -423,7 +423,7 @@ async def test_submit_gate_below_threshold_no_confirmation_needed(foundation, mo
 
 @pytest.mark.asyncio
 async def test_submit_sanitises_workflow_request_json(foundation, monkeypatch) -> None:
-    """the credential-isolation invariant — no credentials in persisted records.
+    """the project conventions invariant 2 — no credentials in persisted records.
     A param named like a credential field must be redacted in the
     workflow row's ``request_json``."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
@@ -1430,7 +1430,7 @@ async def test_remote_job_failed_includes_next_action_hint_about_quota(
     workaround (serialise submits / wait before retry-storm) as a
     structured ``next_action_hint`` on every remote_job_failed error
     so LLM agents and human readers see it without needing to read
-    project decisions log."""
+    decisions.md."""
     import json
 
     from copernicus_mcp.backends.cds.backend import CdsBackend
@@ -1560,7 +1560,7 @@ async def test_check_status_dismissed_maps_to_cancelled(foundation, monkeypatch)
 @pytest.mark.asyncio
 async def test_check_status_unknown_status_raises_backend_error(foundation, monkeypatch) -> None:
     """An unrecognised SDK status surfaces as ``BackendError`` rather
-    than a DB CHECK violation (the workflow-status enum invariant)."""
+    than a DB CHECK violation (the project conventions invariant 5)."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
     from copernicus_mcp.errors import BackendError
 

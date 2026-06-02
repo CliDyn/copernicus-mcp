@@ -208,7 +208,7 @@ def _drop_contract_violations(
     addressed (malformed rows never propagate into filter results).
 
     Round-1 H1 raised; this is a deliberate policy reversal logged in
-    under T-CMEMS-GET-INDEX-006.
+    ``the project decision log`` under T-CMEMS-GET-INDEX-006.
     """
     if df.empty:
         return df

@@ -239,7 +239,7 @@ def test_cancellation_classes_unrelated() -> None:
 
 def test_no_conflated_except_clause_in_src() -> None:
     """AST walk: no ``except`` clause may catch both OperationCancelledError
-    and ``asyncio.CancelledError`` together (the cancellation invariant).
+    and ``asyncio.CancelledError`` together (the project conventions invariant #3).
 
     Covers tuple form ``except (A, B)``, union form ``except A | B`` (3.10+),
     ``except*`` (PEP 654), and aliasing variants. Bare ``except:`` and

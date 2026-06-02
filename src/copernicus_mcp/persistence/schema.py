@@ -2,7 +2,7 @@
 
 Iter 1 freezes this schema. Additive changes (new columns / tables / indices)
 are allowed in later iterations; breaking changes require a migration story
-and an entry in .
+and an entry in ``the project decision log``.
 
 Timestamp deviation from research §11.5.6:
     The research models timestamps as INTEGER (epoch). We store them as ISO

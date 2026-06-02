@@ -2,7 +2,7 @@
 
 All eight protocol methods raise ``BackendError(error_subclass="not_implemented")``.
 The full implementation is broken into T-CDS-002 .. T-CDS-007 per
-internal design notes. Each follow-up task is its own Tier-A PR with
+``the project conventions``. Each follow-up task is its own Tier-A PR with
 codex review.
 
 This file intentionally has no business logic — it exists so:
@@ -224,7 +224,7 @@ def _parse_terms_not_accepted(message: str) -> list[dict[str, Any]] | None:
 
 
 # Mapping cdsapi remote-state values (research §6.5.2) to our canonical
-# workflow status enum (the workflow-status enum invariant). Anything not in this
+# workflow status enum (the project conventions invariant 5). Anything not in this
 # table surfaces as ``BackendError(unknown_remote_status)`` — never a
 # DB CHECK violation.
 _REMOTE_STATUS_MAP: dict[str, str] = {
@@ -392,6 +392,8 @@ def _cds_target_filename(short_hash: str, inputs: Mapping[str, Any]) -> str:
             return f"cds_{short_hash}.nc"
         if lo in _GRIB_ALIASES:
             return f"cds_{short_hash}.grib"
+        if lo == "csv":  # T-TS-007: ARCO *-timeseries products emit native CSV.
+            return f"cds_{short_hash}.csv"
     return f"cds_{short_hash}.bin"
 
 
@@ -399,6 +401,7 @@ _CONTENT_TYPE_BY_EXTENSION: dict[str, str] = {
     ".nc": "application/x-netcdf",
     ".grib": "application/x-grib",
     ".zip": "application/zip",
+    ".csv": "text/csv",
     ".bin": "application/octet-stream",
 }
 
@@ -624,7 +627,7 @@ def _success_response_from_cache(
     filepath: Path,
 ) -> dict[str, Any]:
     """Canonical large-data success envelope for an idempotent cache
-    hit. Mirrors CMEMS shape (the large-data invariant)."""
+    hit. Mirrors CMEMS shape (the project conventions invariant 1)."""
     return {
         "status": "successful",
         "cache_hit": True,
@@ -672,7 +675,7 @@ def _not_implemented(method: str) -> BackendError:
         f"CdsBackend.{method} not implemented yet (T-CDS scaffold)",
         record=build_error_record(
             "BackendError",
-            message=(f"CdsBackend.{method} not implemented yet"),
+            message=(f"CdsBackend.{method} not implemented yet — see the project conventions"),
             error_subclass="not_implemented",
             recovery_action="report_to_administrator",
         ),
@@ -829,7 +832,7 @@ class CdsBackend(AbstractBackend):
     async def validate(self, params: dict[str, Any]) -> dict[str, Any]:
         """Schema-only validation (T-CDS-002).
 
-        the per-dataset
+        Per ``the project research notes`` §6.9.1 the per-dataset
         constraint catalogue is server-side; we surface only structural
         problems here. Mirrors the CMEMS ``validate`` discipline:
         sanitise the error output before returning so a Pydantic ``msg``
@@ -968,7 +971,7 @@ class CdsBackend(AbstractBackend):
     async def estimate(self, params: dict[str, Any]) -> dict[str, Any]:
         """Heuristic byte-size estimate for a CDS retrieve request (T-CDS-004).
 
-
+        Per ``the project research notes`` §6.7.4 option 1:
         the legacy ``cdsapi`` 0.7.7 client has no estimation API; we
         derive the estimate from request shape alone (product of
         list-cardinalities × dataset-specific bytes-per-field × area
@@ -1142,7 +1145,7 @@ class CdsBackend(AbstractBackend):
                 # ``except Exception`` would let cancellation skip the
                 # delete. ``asyncio.shield`` keeps the in-flight delete
                 # alive even if the outer task is being torn down.
-                # the cancellation invariant preserved: we don't catch
+                # the project conventions invariant 3 preserved: we don't catch
                 # ``CancelledError`` — it propagates after the finally.
                 recorded = False
                 try:
@@ -1480,7 +1483,7 @@ class CdsBackend(AbstractBackend):
                 # the file is in the cache; sidecar is recoverable from
                 # the SQLite provenance table even if the JSON write
                 # raced. CancelledError must NOT be swallowed
-                # (the cancellation invariant).
+                # (the project conventions invariant 3).
                 try:
                     await self._record_cds_provenance(
                         request_id=request_id,

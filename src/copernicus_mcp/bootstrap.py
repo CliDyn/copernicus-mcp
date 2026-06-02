@@ -3,7 +3,7 @@
 T-015. Iter 1 only knows the ``cmems`` backend; T-024 plugs ``CmemsBackend``
 into ``_BACKEND_FACTORIES`` so this file does not need to change again.
 
-Graceful-degradation rule: even when credentials
+Graceful-degradation rule (the project research notes): even when credentials
 for a configured backend are missing, the backend is still **registered** —
 operations that need credentials raise a clean ``AuthError`` with
 ``recovery_action="configure_credentials"``. This lets ``copernicus_mcp_status``
@@ -103,7 +103,7 @@ async def build_backend_registry(
         if factory is None:
             # Transitional: between T-015 (this file) and T-024 (CMEMS factory
             # plug-in) no factories exist. Logged at ERROR — once T-024 lands
-            # this branch indicates a real config bug..
+            # this branch indicates a real config bug. See the project decision log.
             logger.error(
                 "no factory registered for enabled backend",
                 extra={"backend_id": backend_id},

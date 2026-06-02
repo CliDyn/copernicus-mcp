@@ -102,7 +102,7 @@ class CdsDownloadRequestResultInput(BaseModel):
 
     Round-1 cr M1: ``target`` was previously required, but the backend
     ignores it (the file is already at the canonical cache location per
-    the large-data invariant). Requiring an ignored field bait the LLM
+    the project conventions invariant 1). Requiring an ignored field bait the LLM
     into inventing plausible-looking paths it would never use; making
     it optional removes the trap.
     """
@@ -115,7 +115,7 @@ class CdsDownloadRequestResultInput(BaseModel):
         description=(
             "Optional. Currently IGNORED — the backend always returns "
             "a descriptor pointing at the canonical cache location "
-            "(the large-data invariant). Reserved for future use."
+            "(the project conventions invariant 1). Reserved for future use."
         ),
     )
 
@@ -459,7 +459,7 @@ async def cds_download_request_result(
 ) -> dict[str, Any]:
     """Resolve the cached file descriptor for a successful CDS request.
 
-    No bytes are returned; per the large-data invariant the response
+    No bytes are returned; per the project conventions invariant 1 the response
     is ``{filepath, uri, cache_key, metadata, provenance}``. Read the
     file from disk via the returned path. The path is stable until
     cache eviction.

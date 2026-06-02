@@ -257,7 +257,7 @@ class TestRoundOneRegressions:
     async def test_H1_unknown_field_does_not_leak_value_into_error_message(
         self, foundation: Any
     ) -> None:
-        # the credential-isolation invariant: pydantic stringifies "input_value='X'" into
+        # the project conventions #2: pydantic stringifies "input_value='X'" into
         # the error message; that path can leak credential-shaped extras.
         # _validate_list_files must catch pydantic and re-raise with
         # structured field_errors (loc/msg/type only, no raw value).

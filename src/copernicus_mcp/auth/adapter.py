@@ -14,7 +14,7 @@ class AuthAdapter(Protocol):
     is the only public introspection surface and returns ``<set>`` / ``<unset>``
     placeholders only.
 
-
+    See ``the project research notes`` §9.6 for the canonical protocol shape.
     """
 
     backend_id: str

@@ -3,7 +3,7 @@
 `copernicus-mcp` registers a diagnostic plus per-backend tool surfaces:
 
 - **Diagnostic** (always registered): `copernicus_mcp_status`.
-- **CMEMS** (eleven tools, registered when the `cmems` backend is enabled): `marine_search_groups`, `marine_search_products`, `marine_search_datasets`, `marine_describe_dataset`, `marine_get_coordinates`, `marine_estimate_subset`, `marine_subset_dataset`, `marine_list_files`, `marine_get_files`, `marine_check_status`, `marine_cancel_subset`. The first three implement the three-step hierarchical pipeline: start with `marine_search_groups` for free-text routing, drill into `marine_search_products` with the chosen `group_ids`, then resolve datasets via `marine_search_datasets` with the chosen `product_ids` (plus optional `bbox` / `time_range`). The pipeline is the default path for any agentic query; the bare `marine_search_datasets` (`keyword=` only) flat path stays available for known dataset ids.
+- **CMEMS** (eleven tools, registered when the `cmems` backend is enabled): `marine_search_groups`, `marine_search_products`, `marine_search_datasets`, `marine_describe_dataset`, `marine_get_coordinates`, `marine_estimate_subset`, `marine_subset_dataset`, `marine_list_files`, `marine_get_files`, `marine_check_status`, `marine_cancel_subset`. The first three implement the three-step hierarchical pipeline (T-CMEMS-HIER-005): start with `marine_search_groups` for free-text routing, drill into `marine_search_products` with the chosen `group_ids`, then resolve datasets via `marine_search_datasets` with the chosen `product_ids` (plus optional `bbox` / `time_range`). The pipeline is the default path for any agentic query; the bare `marine_search_datasets` (`keyword=` only) flat path stays available for known dataset ids.
 - **CDS / ADS / EWDS** (eight tools, registered when the `cds` backend is enabled AND credentials resolve): `cds_search_datasets`, `cds_describe_dataset`, `cds_apply_constraints`, `cds_estimate_request`, `cds_submit_request`, `cds_check_request_status`, `cds_download_request_result`, `cds_cancel_request`.
 
 All tools share these conventions:
@@ -36,12 +36,12 @@ None.
     }
   },
   "cache": {
-    "directory": "/Users/you/.cache/copernicus-mcp",
+    "directory": "~/.cache/copernicus-mcp",
     "size_bytes": 0,
     "entry_count": 0
   },
   "persistence": {
-    "database_path": "/Users/you/.local/state/copernicus-mcp/state.db"
+    "database_path": "~/.local/state/copernicus-mcp/state.db"
   },
   "config": { /* sanitised non-secret subset */ }
 }
@@ -65,7 +65,7 @@ None.
 
 ## `marine_search_groups`
 
-First step of the hierarchical search pipeline. Shortlist CMEMS routing groups for a free-text query. Each group bundles related products by region, domain, and intent (e.g. `physics-mediterranean-state`, `ocean-acidification-monitoring`, `climate-reanalysis`, `arctic-comprehensive`).
+First step of the hierarchical search pipeline (T-CMEMS-HIER-005). Shortlist CMEMS routing groups for a free-text query. Each group bundles related products by region, domain, and intent (e.g. `physics-mediterranean-state`, `ocean-acidification-monitoring`, `climate-reanalysis`, `arctic-comprehensive`).
 
 Offline-only — reads the bundled `groups.json` (47 groups). No credentials, no network.
 
@@ -179,9 +179,9 @@ Each path supports two modes:
 | --------------- | ------------------------------- | -------- | ------- | -------------------------------------------------------------------------- |
 | `keyword`       | `string \| null`                | no       | `null`  | Flat-path: case-insensitive substring match against dataset ids/titles/etc. Hierarchical path: re-ranks cards by phrase overlap. |
 | `product_ids`   | `array<string> \| null`         | no       | `null`  | Hierarchical-path shortlist (usually from `marine_search_products`). Routes through the enriched cards.                          |
-| `bbox`          | `[min_lon, min_lat, max_lon, max_lat]` | no | `null` | Spatial filter. Hierarchical path keeps only cards whose `spatial_extent` overlaps the bbox; null-extent cards are excluded. Antimeridian-crossing bboxes (min_lon > max_lon) are rejected with `ValidationError` per the antimeridian rejection rule — split into two non-crossing bboxes. |
+| `bbox`          | `[min_lon, min_lat, max_lon, max_lat]` | no | `null` | Spatial filter. Hierarchical path keeps only cards whose `spatial_extent` overlaps the bbox; null-extent cards are excluded. Antimeridian-crossing bboxes (min_lon > max_lon) are rejected with `ValidationError` per the project conventions inv-7 — split into two non-crossing bboxes. |
 | `time_range`    | `[start_iso, end_iso]`          | no       | `null`  | Temporal filter. ISO-8601 strings; `start < end` required. Hierarchical path keeps only cards whose `temporal_extent` overlaps; null-extent cards are excluded. |
-| `service_types` | `array<enum>`                   | no       | `null`  | Still rejected with `ValidationError` (filter not yet implemented).        |
+| `service_types` | `array<enum>`                   | no       | `null`  | Filter by service kind — `timeseries`, `geoseries`, `omi-arco`, `static-arco`, `platformseries` (short names, mapped to the catalogue's `arco-*` names). Returns only datasets exposing that service; e.g. `["timeseries"]` finds the datasets that support fast point time-series. Not yet combinable with `bbox` / `time_range` / `product_ids`. |
 | `limit`         | `integer (>=1) \| null`         | no       | `null`  | Maximum dataset records returned. Capped at 50 on the hierarchical path. Flat path's `total_count` reflects the full match count before slicing. |
 | `live`          | `boolean`                       | no       | `false` | Flat path only. When `true`, call the live SDK. Requires CMEMS credentials. |
 
@@ -221,7 +221,7 @@ Each path supports two modes:
 
 ### Errors
 
-- `ValidationError` — `limit < 1`; `service_types` set (unimplemented); `bbox` with wrong shape or antimeridian-crossing; `time_range` with non-ISO entries or `start >= end`; both `product_id` and `product_ids` set.
+- `ValidationError` — `limit < 1`; `service_types` combined with `bbox` / `time_range` / `product_ids` (use it on its own for now); `bbox` with wrong shape or antimeridian-crossing; `time_range` with non-ISO entries or `start >= end`; both `product_id` and `product_ids` set.
 - `AuthError` — `live=true` and CMEMS credentials missing or invalid. Offline default never raises this.
 - `BackendError` — bundled snapshot missing (broken install) or live SDK call failed after retries.
 
@@ -429,20 +429,20 @@ Download a spatio-temporal subset of a CMEMS dataset. Returns a descriptor; the 
 | `maximum_longitude`             | `float [-180, 180]`   | yes      | —           | Eastern edge. Antimeridian-crossing bboxes are rejected with a recovery hint. |
 | `minimum_latitude`              | `float [-90, 90]`     | yes      | —           | Southern edge.                                                               |
 | `maximum_latitude`              | `float [-90, 90]`     | yes      | —           | Northern edge.                                                               |
-| `minimum_depth`                 | `float (>=0)`         | yes      | —           | Shallowest depth in metres.                                                  |
-| `maximum_depth`                 | `float (>=0)`         | yes      | —           | Deepest depth in metres.                                                     |
-| `start_datetime`                | `string` (ISO 8601 UTC) | yes    | —           | Inclusive start. Naive datetimes rejected.                                   |
-| `end_datetime`                  | `string` (ISO 8601 UTC) | yes    | —           | Strictly after `start_datetime`.                                             |
+| `minimum_depth`                 | `float (>=0) \| null` | no       | `null`      | Shallowest depth in metres. Optional — omit for a surface / 2-D dataset that has no depth axis. |
+| `maximum_depth`                 | `float (>=0) \| null` | no       | `null`      | Deepest depth in metres. Optional; omit both bounds to retrieve the dataset's full depth range. |
+| `start_datetime`                | `string` (ISO 8601)   | yes      | —           | Inclusive start. Date-only (`2023-06-01`) and naive datetimes are accepted and assumed UTC; tz-aware inputs are converted to UTC. |
+| `end_datetime`                  | `string` (ISO 8601)   | yes      | —           | Strictly after `start_datetime`. Same date-only / naive / UTC handling.      |
 | `coordinates_selection_method`  | enum                  | no       | `inside`    | `inside` \| `strict-inside` \| `nearest` \| `outside`.                       |
 | `service`                       | `string \| null`      | no       | `null`      | Force a specific CMEMS service (`geoseries`, `timeseries`, …).               |
-| `file_format`                   | enum                  | no       | `netcdf`    | `netcdf` \| `zarr`.                                                          |
+| `file_format`                   | enum                  | no       | `netcdf`    | `netcdf` \| `zarr` \| `csv`. `csv` is opt-in and **restricted to a single point** (`min==max` on both longitude and latitude) — it is retrieved via the toolbox `read_dataframe`, which loads the subset into memory, so an area request with `csv` is rejected with a hint to use `netcdf`. The default stays `netcdf`. |
 | `netcdf_compression_level`      | `integer [0, 9]`      | no       | `1`         | NetCDF deflate level.                                                        |
 
 ### Output
 
 ```jsonc
 {
-  "filepath": "/Users/you/.cache/copernicus-mcp/cmems/<cache_key>/data.nc",
+  "filepath": "~/.cache/copernicus-mcp/cmems/<cache_key>/data.nc",
   "uri": "copernicus://files/<cache_key>",
   "cache_key": "<sha256-derived>",
   "cache_hit": false,
@@ -689,7 +689,7 @@ Return the full STAC item for one dataset.
 
 Slim STAC item: `{id, description, extent, keywords, license, links, providers, sci:doi, store, available_inputs, …}`. Note `title` lives on search summaries, not full items.
 
-`available_inputs` lists every parameter the dataset accepts and the valid values for each (`data_format: [netcdf, grib]`, `download_format: [zip, unarchived]`, the canonical `variable` enum, …). Compose your `cds_submit_request` using only these field names and values; the legacy `format: …` key was deprecated by the new CDS processes engine and is silently rejected by the server.
+`available_inputs` lists every parameter the dataset accepts and the valid values for each (`data_format: [netcdf, grib]`, `download_format: [zip, unarchived]`, the canonical `variable` enum, …). For the ARCO `*-timeseries` products (e.g. `reanalysis-era5-land-timeseries`) it also carries a synthetic `location: {latitude, longitude}` entry — those products take a single point, not an `area`/grid, and can emit `data_format: csv`. Compose your `cds_submit_request` using only these field names and values; the legacy `format: …` key was deprecated by the new CDS processes engine and is silently rejected by the server.
 
 **Caveat — `available_inputs` is a snapshot.** It ships in the bundled catalogue refreshed manually (every few weeks). CDS occasionally rotates field names / adds new constraints. If a submit composed from this snapshot fails with `remote_job_failed`, call `cds_apply_constraints(dataset_id, inputs={})` for the LIVE server-side valid values verbatim — they are the canonical source of truth.
 
@@ -778,7 +778,7 @@ Resubmit with `confirmed: true` to proceed.
 
 - `ValidationError`, `AuthError` — standard.
 - `BackendError` with `error_subclass="remote_job_failed"` — the CDS server marked the job failed. `context.backend_diagnostics` carries the structured server-side job state (status, error.code/message, attempt, queue metadata) for debugging. `next_action_hint` mentions the empirical CDS concurrent-quota pattern (~5-6 active jobs/user; excess reaped after ~5 min) so callers know to serialise submits rather than retry-storm.
-- `TermsNotAcceptedError` — surfaced when the CDS / ADS / EWDS server returns HTTP 403 + "user didn't accept all required site policies". `recovery_url` points at the first missing licence page on the correct store host (routing picks the right endpoint per dataset's `store`). `context.missing_policies` enumerates all of them. Open each URL, accept, and re-submit the same request.
+- `TermsNotAcceptedError` — surfaced when the CDS / ADS / EWDS server returns HTTP 403 + "user didn't accept all required site policies". `recovery_url` points at the first missing licence page on the correct store host (T-CDS-011.1 — routing picks the right endpoint per dataset's `store`). `context.missing_policies` enumerates all of them. Open each URL, accept, and re-submit the same request.
 
 ### Cross-store routing
 
@@ -802,7 +802,7 @@ Look up the workflow row for a request_id.
 
 `{status, request_id, submitted_at, updated_at, cache_key, result, error_details}`. Status is one of `queued` / `running` / `successful` / `failed` / `cancelled`. On `successful` the file lives in the canonical cache and `result` carries `{filepath, uri, metadata, provenance}` — the same shape as `cds_download_request_result`. On `failed` `error_details` carries the canonical error record.
 
-`result.metadata.content_type` is `application/x-netcdf` / `application/x-grib` / `application/zip` / `application/octet-stream`, derived from the actual bytes on disk (the cached filename's extension reflects the real format, not whatever the inputs requested — see `cds_download_request_result`).
+`result.metadata.content_type` is `application/x-netcdf` / `application/x-grib` / `application/zip` / `text/csv` / `application/octet-stream`, derived from the actual bytes on disk (the cached filename's extension reflects the real format, not whatever the inputs requested — see `cds_download_request_result`).
 
 ### Errors
 
@@ -823,7 +823,7 @@ Fetch a completed result from the canonical cache. Returns a file descriptor —
 
 `metadata` carries `{size_bytes, content_type}`. The cached filename ends in `.nc` / `.grib` / `.zip` / `.bin` reflecting the real bytes on disk:
 
-- The backend derives an initial extension from the submit `inputs` (`download_format: zip` → `.zip`; `data_format: netcdf | netcdf3 | netcdf4 | netcdf_legacy` → `.nc`; `data_format: grib | grib1 | grib2` → `.grib`).
+- The backend derives an initial extension from the submit `inputs` (`download_format: zip` → `.zip`; `data_format: netcdf | netcdf3 | netcdf4 | netcdf_legacy` → `.nc`; `data_format: grib | grib1 | grib2` → `.grib`; `data_format: csv` → `.csv`).
 - After download a magic-byte sniff overrides the extension if the actual content disagrees (e.g. ECMWF wraps multi-variable NetCDF requests in a ZIP — the cached file lands as `.zip` regardless of what the agent asked for, and `content_type` reports `application/zip`). Trust the on-disk extension and the reported `content_type`, not the original request shape.
 
 ### Errors

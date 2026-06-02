@@ -1,6 +1,7 @@
 """CDS PAT auth adapter (T-CDS-001 completion).
 
-The exit point for the Common Data Store Personal Access Token. the CDS API uses a single
+The exit point for the Common Data Store Personal Access Token. Per
+``the project research notes`` §6.8.1 the CDS API uses a single
 UUID PAT injected as ``PRIVATE-TOKEN: <UUID>`` (NOT ``Authorization:
 Bearer``). One PAT covers CDS + ADS + EWDS — the store is selected by
 ``endpoint_url``, not by per-store credentials (research §6.8.2).
