@@ -5,7 +5,7 @@ Cache keys for CDS retrieve requests must:
 - depend on dataset_id AND the full ``inputs`` dict (semantically distinct
   requests must NOT collide);
 - be insensitive to dict ordering (Python dict insertion order);
-- strip credential-shaped keys recursively (the credential-isolation invariant).
+- strip credential-shaped keys recursively (the project conventions invariant #2).
 """
 
 from __future__ import annotations
@@ -45,6 +45,26 @@ def _req(**overrides):
     }
     base.update(overrides)
     return CdsRetrieveRequest(**base)
+
+
+@pytest.mark.asyncio
+async def test_cache_key_with_nested_location_is_deterministic(coordinator) -> None:
+    """T-TS-001: a nested ``location`` point canonicalises deterministically
+    (sorted keys) so two equal timeseries requests dedupe."""
+    inputs = {
+        "variable": ["2m_temperature"],
+        "location": {"latitude": 47.4979, "longitude": 19.0402},
+        "date": ["2023-06-01/2023-06-07"],
+        "data_format": "csv",
+    }
+    a = coordinator.cache_key_for_cds_retrieve(
+        _req(dataset_id="reanalysis-era5-land-timeseries", inputs=inputs)
+    )
+    b = coordinator.cache_key_for_cds_retrieve(
+        _req(dataset_id="reanalysis-era5-land-timeseries", inputs=dict(inputs))
+    )
+    assert a == b
+    assert a.startswith("cds:submit:reanalysis-era5-land-timeseries:")
 
 
 @pytest.mark.asyncio
@@ -145,7 +165,7 @@ async def test_cache_key_sensitive_to_list_order(coordinator) -> None:
 async def test_cache_key_strips_credential_shaped_input(
     coordinator,
 ) -> None:
-    """the credential-isolation invariant + cache-key purity (the project error-class convention
+    """the project conventions invariant #2 + cache-key purity (the project conventions
     invariant #6): a credential-shaped key in ``inputs`` (placed there
     by a buggy caller) must NOT influence the cache key."""
     a = coordinator.cache_key_for_cds_retrieve(_req())

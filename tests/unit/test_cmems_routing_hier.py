@@ -564,12 +564,13 @@ def test_search_datasets_medium_confidence_when_pool_exceeds_limit() -> None:
     assert result["confidence"] == "medium"
 
 
-def test_search_with_unsupported_service_types_raises_validation_error(
+def test_search_service_types_combined_with_cards_raises(
     tmp_path,
 ) -> None:
-    """codex round-1 HIGH: when bbox/time_range/product_ids routed
-    through the cards path, ``service_types`` was silently dropped
-    instead of raising ValidationError (the flat path does reject)."""
+    """T-TS-004: ``service_types`` filters on its own (flat path), but cannot
+    yet be combined with the cards path (product_ids/bbox/time_range) — that
+    combination still raises with a clear recovery hint rather than silently
+    dropping the filter."""
     import asyncio
 
     from copernicus_mcp.backends.cmems.backend import CmemsBackend
@@ -587,6 +588,24 @@ def test_search_with_unsupported_service_types_raises_validation_error(
                 }
             )
         )
+
+
+def test_search_service_types_filters_flat_path(tmp_path) -> None:
+    """T-TS-004 acceptance: ``service_types`` alone routes the flat offline
+    path and returns only datasets exposing the requested service kind."""
+    import asyncio
+
+    from copernicus_mcp.backends.cmems.backend import CmemsBackend
+
+    foundation = _make_foundation_for_backend(tmp_path)
+    backend = CmemsBackend(foundation=foundation, credentials=None)
+
+    out = asyncio.run(backend.search({"service_types": ["timeseries"], "limit": 8}))
+    assert out["mode"] == "offline"
+    assert out["datasets"]
+    assert all(
+        "arco-time-series" in (d.get("service_types") or []) for d in out["datasets"]
+    )
 
 
 def test_search_with_malformed_bbox_raises_validation_error(tmp_path) -> None:

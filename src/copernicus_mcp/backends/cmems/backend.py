@@ -259,7 +259,7 @@ class CmemsBackend(AbstractBackend):
         Validates input shapes loudly (round-1 review):
           * service_types is still unimplemented and rejected.
           * bbox must be a 4-tuple of floats with min_lon < max_lon
-            (antimeridian-crossing rejected per the antimeridian rejection rule).
+            (antimeridian-crossing rejected per the project conventions inv-7).
           * time_range must be a 2-tuple of non-empty strings.
         """
         # codex round-1 HIGH: the cards path bypassed _validate_search,
@@ -267,14 +267,19 @@ class CmemsBackend(AbstractBackend):
         # here too with the same recovery message.
         if params.get("service_types"):
             raise CmcpValidationError(
-                "CMEMS search filters not yet implemented: ['service_types']",
+                "CMEMS search: service_types cannot yet be combined with "
+                "bbox / time_range / product_ids",
                 record=build_error_record(
                     "ValidationError",
-                    message="CMEMS search filters not yet implemented: ['service_types']",
+                    message=(
+                        "CMEMS search: service_types cannot yet be combined "
+                        "with bbox / time_range / product_ids"
+                    ),
                     recovery_action="modify_request_parameters",
                     next_action_hint=(
-                        "Use ``keyword``, ``product_id``, ``product_ids``, "
-                        "``bbox``, or ``time_range``; omit service_types."
+                        "Use service_types on its own (it filters the flat "
+                        "catalogue), or drop it when filtering by "
+                        "bbox / time_range / product_ids."
                     ),
                 ),
             )
@@ -330,11 +335,19 @@ class CmemsBackend(AbstractBackend):
 
     def _search_offline(self, req: CmemsSearchRequest) -> dict[str, Any]:
         """Bundled-snapshot search path. No credentials, no network."""
-        total = _catalogue.count_matches(keyword=req.keyword, product_id=req.product_id)
+        wanted = (
+            _catalogue.canonical_service_types(req.service_types)
+            if req.service_types
+            else None
+        )
+        total = _catalogue.count_matches(
+            keyword=req.keyword, product_id=req.product_id, service_types=wanted
+        )
         rows = _catalogue.search(
             keyword=req.keyword,
             product_id=req.product_id,
             limit=req.limit,
+            service_types=wanted,
         )
         result = {
             "datasets": rows,
@@ -345,7 +358,7 @@ class CmemsBackend(AbstractBackend):
         # Sanitiser pass on the offline envelope (cr round-1 LOW-5):
         # the slim records were already vetted by the refresh
         # script's ``assert_no_credential_leak`` self-check at build
-        # time, so this is defence-in-depth for the invariant 2
+        # time, so this is defence-in-depth for the project conventions inv-2
         # "everything leaving a backend goes through Sanitiser"
         # boundary discipline.
         return self.foundation.sanitiser.sanitise(result)  # type: ignore[no-any-return]
@@ -396,6 +409,15 @@ class CmemsBackend(AbstractBackend):
                     if not isinstance(dataset, dict):
                         continue
                     rows.append(slim_marine_record(product, dataset))
+        if req.service_types:
+            # T-TS-004: parity with offline — filter by service kind so
+            # removing the validation rejection isn't a silent no-op in live.
+            wanted = _catalogue.canonical_service_types(req.service_types)
+            rows = [
+                r
+                for r in rows
+                if not set(r.get("service_types") or []).isdisjoint(wanted)
+            ]
         total = len(rows)
         if req.limit is not None and req.limit > 0 and req.limit < total:
             rows = rows[: req.limit]
@@ -915,7 +937,8 @@ class CmemsBackend(AbstractBackend):
             staging.mkdir(parents=True, exist_ok=False)
             short_hash = cache_key.rsplit(":", 1)[-1]
             safe_id = _slug_dataset_id(req.dataset_id)
-            filename = f"{safe_id}_{short_hash}.nc"
+            ext = "csv" if req.file_format == "csv" else "nc"
+            filename = f"{safe_id}_{short_hash}.{ext}"
             target_path = staging / filename
             # Defence-in-depth: ensure target stays inside staging.
             # Both sides must resolve so a symlinked cache_directory
@@ -1060,7 +1083,9 @@ class CmemsBackend(AbstractBackend):
         cancellation cannot interrupt them.
         """
         try:
-            await asyncio.to_thread(marine.subset, **kwargs)
+            await asyncio.to_thread(
+                _download_to, marine, kwargs, target_path, file_format=req.file_format
+            )
 
             if not target_path.exists():
                 raise BackendError(
@@ -1078,7 +1103,9 @@ class CmemsBackend(AbstractBackend):
                 cache_key=_cache_storage_key(cache_key),
                 source_path=target_path,
                 backend_id="cmems",
-                content_type="application/x-netcdf",
+                content_type=(
+                    "text/csv" if req.file_format == "csv" else "application/x-netcdf"
+                ),
             )
             # M5: clean up the empty staging dir so it doesn't accumulate.
             with contextlib.suppress(OSError):
@@ -1632,7 +1659,7 @@ class CmemsBackend(AbstractBackend):
             if not commit_state["committed"]:
                 # Pre-commit rollback. Note: the underlying
                 # ``marine.get`` thread cannot be cancelled
-                # (the project conventions §10.9 gotcha #8) and may continue
+                # (the project conventions gotcha #8) and may continue
                 # writing to ``staging`` after the rmtree below.
                 # That residual race is accepted — the thread will
                 # eventually finish into a now-deleted dir, and any
@@ -1681,7 +1708,7 @@ class CmemsBackend(AbstractBackend):
             if commit_state["committed"]:
                 # cr+codex round-1 MEDIUM: same as the canonical
                 # branch — preserve the bundle. cr round-2 MEDIUM:
-                # the project conventions §6 forbids raw ``RuntimeError`` /
+                # the project conventions forbids raw ``RuntimeError`` /
                 # ``Exception`` from leaving the backend; wrap into
                 # ``BackendError`` so the orchestrator sees a
                 # canonical class. Also flip the workflow row to
@@ -2093,7 +2120,7 @@ def _validate_bbox(
       * malformed shapes (3-element list, non-numeric entries, etc.)
         raise ValidationError instead of being silently dropped.
       * antimeridian-crossing (``min_lon > max_lon``) is rejected per
-        the antimeridian rejection rule — caller must split into two non-crossing bboxes.
+        the project conventions inv-7 — caller must split into two non-crossing bboxes.
     """
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         raise CmcpValidationError(
@@ -2212,23 +2239,10 @@ def _validate_search(params: dict[str, Any]) -> CmemsSearchRequest:
 
     # Strip orchestrator-injected ``__options`` before Pydantic extra="forbid".
     params = {k: v for k, v in params.items() if k != "__options"}
-    # T-CMEMS-HIER-005: bbox and time_range are now honest filters
-    # routed through the cards path (``_search_in_products``).
-    # ``service_types`` filtering is still unimplemented.
-    unsupported = [f for f in ("service_types",) if params.get(f)]
-    if unsupported:
-        raise CmcpValidationError(
-            f"CMEMS search filters not yet implemented: {unsupported}",
-            record=build_error_record(
-                "ValidationError",
-                message=f"CMEMS search filters not yet implemented: {unsupported}",
-                recovery_action="modify_request_parameters",
-                next_action_hint=(
-                    "Use ``keyword``, ``product_id``, ``product_ids``, "
-                    f"``bbox``, or ``time_range``; omit {unsupported}."
-                ),
-            ),
-        )
+    # T-TS-004: ``service_types`` is now a supported filter on the flat
+    # offline/live path (mapped short -> long in ``_search_offline`` /
+    # ``_search_live``). It is still rejected only when combined with
+    # bbox/time_range/product_ids (the cards path) — see ``_search_in_products``.
     try:
         return CmemsSearchRequest.model_validate(params)
     except PydValidationError as exc:
@@ -2786,15 +2800,21 @@ def _subset_kwargs(req: CmemsSubsetRequest, *, dry_run: bool) -> dict[str, Any]:
         "maximum_longitude": req.maximum_longitude,
         "minimum_latitude": req.minimum_latitude,
         "maximum_latitude": req.maximum_latitude,
-        "minimum_depth": req.minimum_depth,
-        "maximum_depth": req.maximum_depth,
         "start_datetime": req.start_datetime,
         "end_datetime": req.end_datetime,
         "coordinates_selection_method": req.coordinates_selection_method,
-        "file_format": req.file_format,
+        # T-TS-005: subset() has no csv writer — a csv request estimates as
+        # netcdf (dry-run) and downloads via read_dataframe (_download_to).
+        "file_format": "netcdf" if req.file_format == "csv" else req.file_format,
         "netcdf_compression_level": req.netcdf_compression_level,
         "dry_run": dry_run,
     }
+    # T-TS-006: depth bounds are optional — omit them so a surface / 2-D
+    # dataset (no depth axis) isn't forced to invent a depth range.
+    if req.minimum_depth is not None:
+        kwargs["minimum_depth"] = req.minimum_depth
+    if req.maximum_depth is not None:
+        kwargs["maximum_depth"] = req.maximum_depth
     if req.dataset_version is not None:
         kwargs["dataset_version"] = req.dataset_version
     if req.dataset_part is not None:
@@ -2802,6 +2822,41 @@ def _subset_kwargs(req: CmemsSubsetRequest, *, dry_run: bool) -> dict[str, Any]:
     if req.service is not None:
         kwargs["service"] = req.service
     return kwargs
+
+
+# Subset-only kwargs that ``read_dataframe`` does not accept; stripped on the
+# csv path (T-TS-005).
+_SUBSET_ONLY_KWARGS = frozenset(
+    {
+        "output_directory",
+        "output_filename",
+        "file_format",
+        "netcdf_compression_level",
+        "dry_run",
+    }
+)
+
+
+def _download_to(
+    marine: Any,
+    kwargs: dict[str, Any],
+    target_path: Path,
+    *,
+    file_format: str,
+) -> None:
+    """Run the toolbox download into ``target_path``.
+
+    ``csv`` requests go through ``read_dataframe`` (subset has no csv writer)
+    and are written with ``DataFrame.to_csv``; everything else uses ``subset``,
+    which writes the file itself via ``output_directory``/``output_filename``.
+    Synchronous — call via ``asyncio.to_thread``.
+    """
+    if file_format == "csv":
+        df_kwargs = {k: v for k, v in kwargs.items() if k not in _SUBSET_ONLY_KWARGS}
+        df = marine.read_dataframe(**df_kwargs)
+        df.to_csv(target_path, index=True)
+    else:
+        marine.subset(**kwargs)
 
 
 def _human_size(num_bytes: int) -> str:
@@ -2818,7 +2873,7 @@ def _human_size(num_bytes: int) -> str:
 def _map_estimate_response(response: Any) -> dict[str, Any]:
     # Plan §1 also lists ``n_chunks``, ``temporal_chunks``, ``spatial_chunks``;
     # the toolbox ``ResponseSubset`` (see spikes/T-000-cmems-smoke/FINDINGS.md)
-    # does not expose them. Iter 1 punts on those fields.
+    # does not expose them. Iter 1 punts on those fields — see the project decision log.
     transfer_mb = _get(response, "data_transfer_size")
     file_mb = _get(response, "file_size")
     raw_service = _get(response, "service")
@@ -2829,11 +2884,19 @@ def _map_estimate_response(response: Any) -> dict[str, Any]:
         bytes_estimate = 0
         epistemic = "approximate"
     else:
-        # Prefer data_transfer_size (network bytes) per T-000 spike findings —
-        # confirmation gates compare against IO/network budgets, not on-disk size.
-        chosen_mb = transfer_mb if transfer_mb is not None else file_mb
+        # T-TS-002: gate on the OUTPUT file_size (the file the caller receives),
+        # NOT data_transfer_size (zarr chunk-read bytes). A point series can
+        # read ~1.2 GB of chunks while producing a ~60 KB file; gating on
+        # transfer false-fired the 1 GB confirmation gate on tiny point
+        # downloads. Reverses the T-000/T-023 transfer-size choice for the
+        # GATED value (see the project decision log); data_transfer_size is kept below
+        # as an informational field.
+        chosen_mb = file_mb if file_mb is not None else transfer_mb
         bytes_estimate = int(float(chosen_mb) * 1024 * 1024)
 
+    transfer_bytes = (
+        int(float(transfer_mb) * 1024 * 1024) if transfer_mb is not None else None
+    )
     msg = _get(response, "message")
     advisory = (
         str(msg) if msg is not None else "CMEMS data is free under the Mercator Ocean licence."
@@ -2842,6 +2905,7 @@ def _map_estimate_response(response: Any) -> dict[str, Any]:
         "type": "free",
         "estimated_size_bytes": bytes_estimate,
         "estimated_size_human": _human_size(bytes_estimate),
+        "data_transfer_size_bytes": transfer_bytes,
         "service_used": service,
         "advisory_message": advisory,
         "epistemic_status": epistemic,

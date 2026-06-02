@@ -1,6 +1,6 @@
 # CMEMS Layer 2 Bulk Validation Report
 
-corpus_root: discovery-corpus/local-indices
+corpus_root: T-CMEMS-GET-INDEX-000-discovery/local-indices
 dataset_count: 4
 
 ## Per-dataset summary

@@ -402,7 +402,7 @@ def _validate_bbox(bbox: tuple[float, float, float, float]) -> None:
             ),
         )
     if w > e:
-        # CMEMS rejects antimeridian-crossing bboxes (project invariants inv 7).
+        # CMEMS rejects antimeridian-crossing bboxes (the project conventions inv 7).
         # CDS catalogue search has the same policy — the agent should
         # split the query rather than have us guess intent.
         raise ValidationError(
@@ -722,6 +722,16 @@ def store_for(dataset_id: str) -> str | None:
     return None
 
 
+def _is_timeseries_product(record: dict[str, Any]) -> bool:
+    """T-TS-007: the ARCO ``*-timeseries`` products take a nested ``location``
+    point that the upstream machine-readable form omits. Detect them by id
+    suffix or the ``Data type: Time-series`` keyword."""
+    if str(record.get("id", "")).endswith("-timeseries"):
+        return True
+    keywords = record.get("keywords") or []
+    return isinstance(keywords, list) and "Data type: Time-series" in keywords
+
+
 def describe(dataset_id: str) -> dict[str, Any]:
     """Return the full STAC record for ``dataset_id``.
 
@@ -750,6 +760,22 @@ def describe(dataset_id: str) -> dict[str, Any]:
                 constraints = load_constraints().get(dataset_id)
                 if constraints is not None:
                     augmented["available_inputs"] = copy.deepcopy(constraints)
+                if _is_timeseries_product(augmented):
+                    # T-TS-007: upstream omits the required ``location`` point
+                    # from the machine-readable form (STAC summaries empty;
+                    # constraints enumerate only discrete fields). Inject the
+                    # shape so an agent can compose a valid request from
+                    # ``available_inputs`` alone. ``setdefault`` so a future
+                    # upstream addition of ``location`` is never clobbered.
+                    ai = augmented.setdefault("available_inputs", {})
+                    if isinstance(ai, dict):
+                        ai.setdefault(
+                            "location",
+                            {
+                                "latitude": "<float, WGS84 degrees, -90..90>",
+                                "longitude": "<float, WGS84 degrees, -180..180>",
+                            },
+                        )
                 return augmented
     raise NotFoundError(
         f"CDS dataset {dataset_id!r} not found in bundled catalogue",

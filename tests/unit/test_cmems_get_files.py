@@ -438,7 +438,7 @@ async def test_get_files_cancel_before_commit_rolls_back(
         partial.write_bytes(b"partial-bytes")
         started["path"] = partial
         # Block long enough for the test to cancel — the thread will
-        # finish in the background (the toolbox best-effort cancellation limitation), but the
+        # finish in the background (the project conventions gotcha #8), but the
         # awaiter sees CancelledError immediately.
         import time
 
@@ -607,7 +607,7 @@ async def test_get_files_post_commit_failure_preserves_bundle(
     backend = CmemsBackend(foundation=foundation, credentials=_creds())
     # cr round-2 MEDIUM: the raw RuntimeError from the shielded
     # coro must NOT escape ``get_files``. It is wrapped into the
-    # canonical ``BackendError`` (the project error-class convention).
+    # canonical ``BackendError`` (the project conventions).
     from copernicus_mcp.errors import BackendError
 
     with pytest.raises(BackendError, match="post-commit finalize failed") as exc_info:

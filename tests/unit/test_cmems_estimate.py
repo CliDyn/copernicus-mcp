@@ -138,8 +138,10 @@ async def test_estimate_precise_when_toolbox_returns_size(
     out = await backend.estimate(_subset_params())
 
     assert out["type"] == "free"
-    # data_transfer_size (2.5 MB) is the threshold-relevant number per T-000 findings.
-    assert out["estimated_size_bytes"] == int(2.5 * 1024 * 1024)
+    # T-TS-002: gate on the OUTPUT file_size (2.0 MB), not data_transfer_size
+    # (2.5 MB). data_transfer_size is retained as an informational field.
+    assert out["estimated_size_bytes"] == int(2.0 * 1024 * 1024)
+    assert out["data_transfer_size_bytes"] == int(2.5 * 1024 * 1024)
     assert out["estimated_size_human"]
     assert out["service_used"] == "arco-geo-series"
     assert out["epistemic_status"] == "precise"
@@ -491,3 +493,50 @@ async def test_estimate_no_credentials_raises_auth(foundation, monkeypatch) -> N
     backend = CmemsBackend(foundation=foundation, credentials=None)
     with pytest.raises(AuthError):
         await backend.estimate(_subset_params())
+
+
+# --- T-TS-002: estimate gates on output file_size, not data_transfer_size ---
+
+
+def test_map_estimate_prefers_output_file_size_over_transfer() -> None:
+    """A point can read ~1.2 GB of zarr chunks (data_transfer_size) yet produce
+    a ~60 KB file. The gated size must be the OUTPUT file_size; transfer is
+    informational only (else the 1 GB confirmation gate false-fires)."""
+    from copernicus_mcp.backends.cmems.backend import _map_estimate_response
+
+    resp = types.SimpleNamespace(
+        file_size=0.058,
+        data_transfer_size=1192.0,
+        service="arco-time-series",
+        message="dry-run",
+        status="DRY_RUN",
+    )
+    out = _map_estimate_response(resp)
+    assert out["estimated_size_bytes"] == int(0.058 * 1024 * 1024)  # ~60 KB
+    assert out["epistemic_status"] == "precise"
+    assert out["data_transfer_size_bytes"] == int(1192.0 * 1024 * 1024)
+
+
+def test_map_estimate_falls_back_to_transfer_when_no_file_size() -> None:
+    """If the toolbox reports only data_transfer_size, use it (better an
+    over-estimate than zero)."""
+    from copernicus_mcp.backends.cmems.backend import _map_estimate_response
+
+    resp = types.SimpleNamespace(
+        file_size=None,
+        data_transfer_size=2.5,
+        service="arco-geo-series",
+    )
+    out = _map_estimate_response(resp)
+    assert out["estimated_size_bytes"] == int(2.5 * 1024 * 1024)
+    assert out["epistemic_status"] == "precise"
+
+
+def test_map_estimate_approximate_when_both_missing() -> None:
+    from copernicus_mcp.backends.cmems.backend import _map_estimate_response
+
+    resp = types.SimpleNamespace(file_size=None, data_transfer_size=None)
+    out = _map_estimate_response(resp)
+    assert out["estimated_size_bytes"] == 0
+    assert out["epistemic_status"] == "approximate"
+    assert out["data_transfer_size_bytes"] is None

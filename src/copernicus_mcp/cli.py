@@ -55,7 +55,7 @@ app.add_typer(cds_app, name="cds")
 # Two consoles: ``console`` for primary payload output (non-JSON tables /
 # panels go to stdout). ``err_console`` for diagnostics — error panels,
 # confirmation prompts, non-TTY messages — always to stderr so they never
-# corrupt JSON on stdout in ``--json`` mode (the stdio-cleanliness invariant
+# corrupt JSON on stdout in ``--json`` mode (the project conventions invariant #4
 # spirit applied to CLI output).
 console = Console(stderr=False)
 err_console = Console(stderr=True)
@@ -878,7 +878,7 @@ def cds_download(
 ) -> None:
     """Resolve the cached file descriptor for a successful CDS request.
 
-    No bytes are returned (the large-data invariant). The descriptor's
+    No bytes are returned (the project conventions invariant 1). The descriptor's
     ``filepath`` points at the canonical cache location; ``--target``
     is informational and need not be supplied.
     """

@@ -1,6 +1,6 @@
 """``CdsApiKeyAdapter`` tests (T-CDS-001 completion).
 
-the CDS API expects the
+Per ``the project research notes`` §6.8.1 the CDS API expects the
 PAT in a ``PRIVATE-TOKEN: <UUID>`` header — NOT the standard
 ``Authorization: Bearer`` form.
 

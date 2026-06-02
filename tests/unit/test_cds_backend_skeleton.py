@@ -82,7 +82,7 @@ def test_constructs_without_credentials(foundation) -> None:
 
 
 def test_capabilities_match_research(foundation) -> None:
-    """+ §6.6:
+    """Per ``the project research notes`` §6.5 + §6.6:
     CDS is async-only, has no SDK-level dry-run, requires per-dataset T&C."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
 

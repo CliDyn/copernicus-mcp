@@ -4,9 +4,9 @@ Wires the orchestrator + CMEMS tools to a FastMCP stdio server. Three
 resource templates are registered: ``copernicus://datasets/cmems/{id}``,
 ``copernicus://files/{cache_key}``, and ``copernicus://provenance/{record_id}``.
 ``copernicus://jobs/{request_id}`` is deferred (logged in
-).
+``the project decision log``).
 
-project invariants this layer enforces:
+the project conventions invariants this layer enforces:
 - #1 large-data: tools return descriptors only (enforced upstream in
   ``backends/cmems``); resource ``files/{key}`` returns a path string,
   never bytes.
@@ -56,12 +56,12 @@ def build_server(
     # constructor; the wire value defaults to the SDK package version.
     # Surfacing our version here would require subclassing the low-level
     # Server. Deferred — clients can still get our version via the
-    # ``copernicus_mcp_status`` tool..
+    # ``copernicus_mcp_status`` tool. See the project decision log.
     # The cache path embedded below is either the platformdirs-derived
     # OS default (our code, no user input) OR a user-configured path
     # via env/CLI/yaml. We pass it through as-is: by design we don't
     # sanitise user-controlled config — if a user names their directory
-    # ``/tmp/key=hunter2/...`` that's their decision. project invariants
+    # ``/tmp/key=hunter2/...`` that's their decision. the project conventions
     # invariant 2 protects against US injecting credentials; it does
     # not require us to scrub user-owned paths.
     server = FastMCP(
@@ -146,7 +146,7 @@ def build_server(
         # Path sanitisation: same discipline as ``status()`` — a user who
         # configures cache_directory at e.g. ``/tmp/password=hunter2/...``
         # must not see the secret leak through the resource boundary
-        # (codex final-batch HIGH; the credential-isolation invariant).
+        # (codex final-batch HIGH; the project conventions invariant #2).
         # T-039 round 3: the URL carries a bare cache_key for clean URIs,
         # while the cache stores under ``f"file:{cache_key}"``. Try both
         # so URIs from any historical caller resolve.

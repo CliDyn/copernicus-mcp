@@ -1,6 +1,6 @@
 """Heuristic byte-size estimator for CDS retrieve requests (T-CDS-004).
 
- the legacy
+Per ``the project research notes`` §6.7.4 option 1: the legacy
 ``cdsapi`` 0.7.7 client has no estimation API, and the
 ``ecmwf-datastores-client.apply_constraints`` (option 2) is not yet on the
 runtime dependency list. Using a real submit as a probe (option 3) abuses

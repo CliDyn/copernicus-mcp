@@ -4,7 +4,7 @@ This document covers everything you need to run `copernicus-mcp` against the liv
 
 Two backends are shipped: `cmems` (Copernicus Marine Service) and `cds` (Climate Data Store family — CDS / ADS / EWDS share one PAT). **Both are enabled by default.** Trim the tool surface (and the LLM context cost) by setting `COPERNICUS_MCP_ENABLED_BACKENDS=cmems` (or `=cds`), or override `enabled_backends` in `config.yaml`. CDS tools auto-skip registration when no PAT is configured, so leaving the default on is safe even if you only have CMEMS credentials.
 
-### CMEMS hierarchical search
+### CMEMS hierarchical search (T-CMEMS-HIER-005)
 
 The CMEMS backend ships a three-level routing hierarchy on top of the bundled catalogue snapshot:
 

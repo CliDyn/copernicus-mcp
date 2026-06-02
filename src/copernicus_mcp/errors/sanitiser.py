@@ -6,7 +6,7 @@ back into MCP / CLI output. Primary credential isolation is upstream
 out of payloads). Sanitiser catches accidental leaks via unforeseen paths
 (exception traces, third-party library messages, backend diagnostics).
 
-See the upstream documentation §13.5.3 and §9.5.3.
+See the project research notes §13.5.3 and §9.5.3.
 
 Iter 1 callers feed JSON-shaped Python primitives (output of
 ``BaseModel.model_dump(mode="json")``) — Pydantic models pass through

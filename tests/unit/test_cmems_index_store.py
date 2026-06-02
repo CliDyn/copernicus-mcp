@@ -124,7 +124,7 @@ class TestFetchIndexBytes:
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates_unwrapped(self, tmp_path: Path) -> None:
-        # the cancellation invariant: never catch / wrap CancelledError.
+        # the project conventions invariant 3: never catch / wrap CancelledError.
         marine = MagicMock()
         marine.get.side_effect = asyncio.CancelledError()
 

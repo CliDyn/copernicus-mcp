@@ -165,7 +165,7 @@ async def test_status_unregistered_backend_listed_when_enabled(setup) -> None:
 
 @pytest.mark.asyncio
 async def test_status_no_credential_value_in_serialised_output(setup, monkeypatch) -> None:
-    """the project conventions §2: no credential value may appear in status output."""
+    """the project conventions: no credential value may appear in status output."""
     from copernicus_mcp.auth.resolver import ResolvedCredentials
 
     foundation, registry, orch = setup

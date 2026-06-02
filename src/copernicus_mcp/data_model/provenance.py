@@ -218,7 +218,7 @@ class ProvenanceRecorder:
 
         # Defensive sanitation: even though callers shouldn't include
         # credentials in user_request/normalized_request/options_applied,
-        # the project conventions §2 makes the recorder the last line of defence.
+        # the project conventions makes the recorder the last line of defence.
         scrubbed_request = request.model_copy(
             update={
                 "user_request": _SANITISER.sanitise(request.user_request),

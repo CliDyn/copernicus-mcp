@@ -1,6 +1,6 @@
 """Unit tests for ``copernicus_mcp.backends.cmems._index_parser``.
 
-Tests follow the TDD discipline pinned in the project TDD discipline: one
+Tests follow the TDD discipline pinned in the project conventions Tier A: one
 behaviour per test, golden-file tests against the committed fixtures
 in ``tests/fixtures/cmems_indices/``, plus targeted edge-case tests
 for malformed input.

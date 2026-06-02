@@ -149,10 +149,32 @@ def _record_matches(record: dict[str, Any], needle: str) -> bool:
     return False
 
 
+# T-TS-004: the public search schema advertises short service names; bundled
+# catalogue records carry the long SDK names. Map short -> long so the
+# advertised filter actually works.
+_SERVICE_TYPE_ALIASES: dict[str, str] = {
+    "timeseries": "arco-time-series",
+    "geoseries": "arco-geo-series",
+    "platformseries": "arco-platform-series",
+    "omi-arco": "omi-arco",
+    "static-arco": "static-arco",
+}
+
+
+def canonical_service_types(requested: list[str]) -> set[str]:
+    """Map requested short service-type names — the public schema enum
+    (``timeseries`` / ``geoseries`` / ``platformseries`` / ``omi-arco`` /
+    ``static-arco``) — to the catalogue's canonical long form. Values already
+    in canonical form map to themselves. The public MCP schema admits only the
+    short names; direct callers passing long names are tolerated."""
+    return {_SERVICE_TYPE_ALIASES.get(s, s) for s in requested}
+
+
 def _iter_matches(
     *,
     keyword: str | None,
     product_id: str | None,
+    service_types: set[str] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield records (from the module cache, not deep-copies) matching
     the given filters. Internal helper shared by ``search`` and
@@ -168,6 +190,10 @@ def _iter_matches(
             continue
         if needle and not _record_matches(record, needle):
             continue
+        if service_types is not None and set(
+            record.get("service_types") or []
+        ).isdisjoint(service_types):
+            continue
         yield record
 
 
@@ -176,6 +202,7 @@ def search(
     keyword: str | None = None,
     product_id: str | None = None,
     limit: int | None = None,
+    service_types: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return slim records matching the filters.
 
@@ -207,7 +234,9 @@ def search(
     """
     effective_limit = limit if limit is not None and limit > 0 else None
     out: list[dict[str, Any]] = []
-    for record in _iter_matches(keyword=keyword, product_id=product_id):
+    for record in _iter_matches(
+        keyword=keyword, product_id=product_id, service_types=service_types
+    ):
         out.append(copy.deepcopy(record))
         if effective_limit is not None and len(out) >= effective_limit:
             break
@@ -218,6 +247,7 @@ def count_matches(
     *,
     keyword: str | None = None,
     product_id: str | None = None,
+    service_types: set[str] | None = None,
 ) -> int:
     """Return the number of records matching the filters, WITHOUT
     slicing or deep-copying.
@@ -229,5 +259,7 @@ def count_matches(
     """
     return sum(
         1
-        for _ in _iter_matches(keyword=keyword, product_id=product_id)
+        for _ in _iter_matches(
+            keyword=keyword, product_id=product_id, service_types=service_types
+        )
     )

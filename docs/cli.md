@@ -73,7 +73,7 @@ copernicus-mcp status --json | jq '.backends.cmems.configured'
 
 ## Hierarchical search pipeline
 
-For agentic / free-text discovery the recommended path is the three-step hierarchical pipeline:
+For agentic / free-text discovery the recommended path is the three-step pipeline introduced in T-CMEMS-HIER-005:
 
 ```bash
 # 1. Free-text → 1-3 groups
@@ -243,7 +243,7 @@ copernicus-mcp marine subset \
   --depth 0,5 \
   --yes --json \
   | jq -r .filepath
-# /Users/you/.cache/copernicus-mcp/cmems/<cache_key>/data.nc
+# ~/.cache/copernicus-mcp/cmems/<cache_key>/data.nc
 ```
 
 ---
@@ -273,8 +273,8 @@ copernicus-mcp marine get-files \
   --filter '*1990*' \
   --yes --json \
   | jq '.files[].filepath'
-# "/Users/you/.cache/copernicus-mcp/cmems/<bundle>/a_1990.nc"
-# "/Users/you/.cache/copernicus-mcp/cmems/<bundle>/b_1990.nc"
+# "~/.cache/copernicus-mcp/cmems/<bundle>/a_1990.nc"
+# "~/.cache/copernicus-mcp/cmems/<bundle>/b_1990.nc"
 ```
 
 The bundle URI (`copernicus://files/<cache_key>`) resolves to a JSON envelope of per-file descriptors via the MCP file resource — useful if an agent wants to enumerate the bundle later without re-running `get-files`.

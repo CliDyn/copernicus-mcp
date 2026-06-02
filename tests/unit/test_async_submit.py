@@ -1,7 +1,7 @@
 """Async submit (T-039): background download + polling for CMEMS.
 
 Each test corresponds to one of the spec items in
-``CODING_AGENT_PLAN.md`` §4.2 — async_mode=True opt-in for
+``the project plan`` §4.2 — async_mode=True opt-in for
 ``marine_subset_dataset``. The default sync flow is unchanged; existing
 tests in ``test_cmems_subset.py`` and ``test_release_regressions.py``
 still pass without modification.
@@ -254,7 +254,7 @@ async def test_async_submit_propagates_exception_to_failed_row(
 ) -> None:
     """When the background toolbox call raises, the workflow row flips to
     ``failed`` with a sanitised ``error_record_json``. No credential-shaped
-    string survives in the persisted record (the credential-isolation invariant).
+    string survives in the persisted record (the project conventions invariant #2).
     """
     from copernicus_mcp.backends.cmems.backend import CmemsBackend
 

@@ -12,6 +12,10 @@ To add a new backend:
 
 Backend-specific specs live in:
 
+- ``the project research notes`` — CMEMS (Iter 1).
+- ``the project research notes`` — CDS / ADS / EWDS family (deferred).
+- ``the project research notes`` — CDSE OData/STAC + Sentinel Hub (deferred).
+- ``the project research notes`` — WEkEO Harmonised Data Access (deferred).
 """
 
 from __future__ import annotations

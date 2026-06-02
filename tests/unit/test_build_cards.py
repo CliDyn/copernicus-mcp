@@ -5,7 +5,7 @@ region, data_type, normalized variables, spatial/temporal labels,
 quality flags) from a slim record produced by ``_catalogue_build.
 slim_marine_record``. Rule-based; no LLM. Pure Python, no I/O.
 
-Schema lock: hierarchical-search Stage 1 dataset
+Schema lock: ``the project conventions`` Stage 1 dataset
 cards table.
 """
 

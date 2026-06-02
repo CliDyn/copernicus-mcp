@@ -20,7 +20,7 @@ _CMEMS_USER_ENV = "COPERNICUSMARINE_SERVICE_USERNAME"
 _CMEMS_PW_ENV = "COPERNICUSMARINE_SERVICE_PASSWORD"
 _CMEMS_FILE_LITERAL = "~/.copernicusmarine/.copernicusmarine-credentials"
 
-# cdsapi credentials-file format reference.
+# T-CDS-001: the project research notes §6.8.3.
 _CDS_KEY_ENV = "CDSAPI_KEY"
 _CDS_URL_ENV = "CDSAPI_URL"
 _CDS_RC_PATH_ENV = "CDSAPI_RC"
@@ -82,7 +82,7 @@ def _is_complete_cds(fields: Mapping[str, str] | None) -> bool:
 def _parse_cdsapi_rc(path: Path) -> dict[str, str]:
     """Parse a ``~/.cdsapirc`` YAML file into ``{key, url}`` if present.
 
-    Per the cdsapi credentials-file format the file is YAML
+    Per ``the project research notes`` §6.8.3 the file is YAML
     with two recognised keys: ``url`` and ``key``. Malformed YAML returns
     an empty dict — caller falls through to ``None``.
     """
@@ -276,7 +276,7 @@ class CredentialResolver:
         """Resolve CDS PAT through the same precedence as cmems but with
         the CDS-specific env vars and ``~/.cdsapirc`` YAML file.
 
-        Per the cdsapi credentials-file format.
+        Per ``the project research notes`` §6.8.3.
         """
         backend = "cds"
 

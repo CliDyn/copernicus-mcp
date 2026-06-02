@@ -1,6 +1,6 @@
 """``CdsBackend.estimate`` tests (T-CDS-004).
 
- heuristic
+Per ``the project research notes`` §6.7.4 option 1: heuristic
 estimate from ``N_fields × bytes_per_field``, where ``N_fields`` is the
 product of cardinalities of cdsapi-canonical list fields (``year``,
 ``month``, ``day``, ``time``, ``variable``, ``pressure_level`` …).

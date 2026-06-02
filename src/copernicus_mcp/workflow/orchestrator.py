@@ -244,7 +244,7 @@ class WorkflowOrchestrator:
         """Cross-cutting "is everything plugged in" probe (T-029).
 
         Wrapped in the same trace_id + error-envelope discipline as ``run()``
-        per the project conventions §3 — diagnostic tools must not crash mid-call.
+        per the project conventions — diagnostic tools must not crash mid-call.
         """
         trace_id = uuid.uuid4().hex
         with bind_trace_id(trace_id):
@@ -293,7 +293,7 @@ class WorkflowOrchestrator:
         cache_size, cache_count = await asyncio.to_thread(_cache_metrics, cache_dir)
 
         # Sanitise the structured backend block AND the storage paths.
-        # the credential-isolation invariant wins over diagnostic value: a user who
+        # the project conventions invariant #2 wins over diagnostic value: a user who
         # configures cache_directory=/tmp/password=hunter2/ must not see
         # "hunter2" leak through status output. The diagnostic cost
         # (a path containing literal ``token=...`` is rewritten) is accepted.

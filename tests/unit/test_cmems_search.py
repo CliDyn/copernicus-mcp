@@ -486,7 +486,7 @@ async def test_search_live_mode_passes_disable_progress_bar(
 ) -> None:
     """cr round-1 M1: the live path must always pass
     ``disable_progress_bar=True`` so the SDK doesn't write a tqdm
-    progress bar to stderr/stdout under MCP stdio (stdio-cleanliness invariant
+    progress bar to stderr/stdout under MCP stdio (the project conventions inv-4
     stdout discipline). Pin the kwarg explicitly."""
     from copernicus_mcp.backends.cmems.backend import CmemsBackend
 

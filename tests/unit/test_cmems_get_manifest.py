@@ -178,7 +178,7 @@ def test_read_manifest_missing_returns_none(tmp_path: Path) -> None:
 def test_to_files_envelope_yields_per_file_descriptor(tmp_path: Path) -> None:
     """The envelope returned to the orchestrator is
     ``{"files": [{filepath, uri, metadata, provenance}, ...]}`` — one
-    descriptor per data file. the large-data invariant forbids inlining the
+    descriptor per data file. the project conventions invariant 1 forbids inlining the
     file bytes; each entry is a path + metadata."""
     from copernicus_mcp.backends.cmems._get_manifest import (
         build_manifest,

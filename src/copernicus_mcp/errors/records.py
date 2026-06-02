@@ -65,7 +65,7 @@ class ErrorRecord(BaseModel):
     """Structured payload that travels alongside every CopernicusMcpError.
 
     Wire contract — any change here is a breaking change to MCP responses.
-    See the upstream documentation §13.2.
+    See the project research notes §13.2.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)

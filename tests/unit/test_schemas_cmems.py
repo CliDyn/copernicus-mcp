@@ -111,11 +111,14 @@ def test_subset_negative_depth_rejected() -> None:
         CmemsSubsetRequest(**kw)
 
 
-def test_subset_naive_datetime_rejected() -> None:
+def test_subset_naive_datetime_assumed_utc() -> None:
+    """T-TS-006: a naive datetime is accepted on the CMEMS subset path and
+    treated as UTC (previously rejected). The global ``iso8601_utc`` stays
+    strict — see test_cmems_ergonomics."""
     kw = _valid_subset_kwargs()
     kw["start_datetime"] = "2024-01-01T00:00:00"
-    with pytest.raises(ValidationError):
-        CmemsSubsetRequest(**kw)
+    req = CmemsSubsetRequest(**kw)
+    assert req.start_datetime == "2024-01-01T00:00:00Z"
 
 
 def test_subset_extra_field_forbidden() -> None:

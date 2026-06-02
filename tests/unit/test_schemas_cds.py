@@ -1,6 +1,6 @@
 """``CdsRetrieveRequest`` schema tests (T-CDS-002).
 
- the per-dataset
+Per ``the project research notes`` §6.9.1, the per-dataset
 constraint catalogue is server-side; static validation is limited to
 **structural** checks. The schema accepts any cdsapi-shaped ``inputs``
 dict (structured CDS form OR MARS-keywords form) but rejects:
@@ -121,6 +121,131 @@ def test_rejects_none_value_in_inputs() -> None:
             dataset_id="ds-1",
             inputs={"variable": None},
         )
+
+
+# --- T-TS-001: nested ``location`` allowlist (ERA5-Land timeseries family) ---
+
+
+def _timeseries_inputs() -> dict[str, object]:
+    """ERA5-Land time-series shape: a nested ``location`` point."""
+    return {
+        "variable": ["2m_temperature"],
+        "location": {"latitude": 47.4979, "longitude": 19.0402},
+        "date": ["2023-06-01/2023-06-07"],
+        "data_format": "csv",
+    }
+
+
+def test_accepts_nested_location_point() -> None:
+    """T-TS-001: the ``*-timeseries`` products require a nested ``location``
+    object — it must validate (the only allowed nested dict)."""
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    req = CdsRetrieveRequest(
+        dataset_id="reanalysis-era5-land-timeseries",
+        inputs=_timeseries_inputs(),
+    )
+    assert req.inputs["location"] == {"latitude": 47.4979, "longitude": 19.0402}
+
+
+def test_rejects_location_with_extra_key() -> None:
+    """Exact shape only — extra nested keys are rejected (codex LOW-10),
+    not silently passed through to sanitisation."""
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    with pytest.raises(ValidationError):
+        CdsRetrieveRequest(
+            dataset_id="reanalysis-era5-land-timeseries",
+            inputs={
+                "variable": ["2m_temperature"],
+                "location": {"latitude": 47.5, "longitude": 19.0, "depth": 5},
+            },
+        )
+
+
+def test_rejects_location_missing_longitude() -> None:
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    with pytest.raises(ValidationError):
+        CdsRetrieveRequest(
+            dataset_id="reanalysis-era5-land-timeseries",
+            inputs={"variable": ["t"], "location": {"latitude": 47.5}},
+        )
+
+
+def test_rejects_location_non_numeric() -> None:
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    with pytest.raises(ValidationError):
+        CdsRetrieveRequest(
+            dataset_id="reanalysis-era5-land-timeseries",
+            inputs={
+                "variable": ["t"],
+                "location": {"latitude": "x", "longitude": 19.0},
+            },
+        )
+
+
+def test_rejects_location_non_finite() -> None:
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            CdsRetrieveRequest(
+                dataset_id="reanalysis-era5-land-timeseries",
+                inputs={
+                    "variable": ["t"],
+                    "location": {"latitude": bad, "longitude": 19.0},
+                },
+            )
+
+
+def test_rejects_location_bool_coordinate() -> None:
+    """``bool`` is an ``int`` subclass — reject it as a coordinate."""
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    with pytest.raises(ValidationError):
+        CdsRetrieveRequest(
+            dataset_id="reanalysis-era5-land-timeseries",
+            inputs={
+                "variable": ["t"],
+                "location": {"latitude": True, "longitude": 19.0},
+            },
+        )
+
+
+def test_location_error_does_not_echo_keys() -> None:
+    """Review (inv #2): an invalid / credential-shaped nested key must NOT be
+    echoed into the validation message — it would reach the ErrorRecord that
+    CDS estimate/submit build from the Pydantic ``field_errors``."""
+    from pydantic import ValidationError
+
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    with pytest.raises(ValidationError) as exc:
+        CdsRetrieveRequest(
+            dataset_id="reanalysis-era5-land-timeseries",
+            inputs={
+                "variable": ["t"],
+                "location": {"latitude": 47.5, "longitude": 19.0, "token=sekret": 1},
+            },
+        )
+    # CDS estimate/submit forward only each error's ``msg`` into the
+    # ErrorRecord (not Pydantic's full str, which echoes input_value). That
+    # ``msg`` must be key-free.
+    msgs = " ".join(e["msg"] for e in exc.value.errors())
+    assert "sekret" not in msgs
+    assert "token" not in msgs
 
 
 def test_rejects_blank_input_key() -> None:
