@@ -25,9 +25,30 @@ CREATE TABLE IF NOT EXISTS workflows (
     response_json TEXT,
     error_record_json TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    parent_request_id TEXT,
+    chunk_plan_json TEXT
 );
 """
+
+# T-CDS-CHUNK-001: parent/child columns for auto-chunked workflows. Additive,
+# nullable, NO foreign key (kept plain TEXT so a fresh CREATE and an ALTER-ed
+# upgrade produce byte-identical schemas; the link is logical, not FK-enforced).
+# On an existing DB the CREATE above is a no-op, so the columns are added by
+# ``ALTER TABLE`` in ``SqliteBackend.initialise`` — see ADDITIVE_COLUMN_MIGRATIONS.
+# The 5-status CHECK is deliberately untouched (invariant 5): an unsubmitted chunk
+# lives in ``chunk_plan_json``, never as a sixth status value.
+ADDITIVE_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("workflows", "parent_request_id", "TEXT"),
+    ("workflows", "chunk_plan_json", "TEXT"),
+]
+
+# Index created AFTER the column migration (it references a possibly-just-added
+# column), so it lives here rather than in INDICES_DDL/ALL_DDL.
+POST_MIGRATION_INDICES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_workflows_parent "
+    "ON workflows(parent_request_id);",
+]
 
 PROVENANCE_DDL = """
 CREATE TABLE IF NOT EXISTS provenance_records (
@@ -62,13 +83,38 @@ CREATE TABLE IF NOT EXISTS cache_entries (
 );
 """
 
+# T-CDS-EST2-003: per-retrieval actual-size observations feeding size
+# calibration. ``cost_units`` is nullable (a restart / FIFO-evicted completion
+# loses the in-memory costing → row written with NULL cost, used only by
+# ``--from-history`` replay). ``area_fraction`` normalises bytes (cost is
+# area-independent; bytes scale with area). New table, so a plain
+# ``CREATE IF NOT EXISTS`` migrates old databases on next ``initialise``.
+SIZE_OBSERVATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS size_observations (
+    observation_id TEXT PRIMARY KEY,
+    backend_id TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    cost_units REAL,
+    size_bytes INTEGER NOT NULL,
+    area_fraction REAL NOT NULL DEFAULT 1.0,
+    request_id TEXT REFERENCES workflows(request_id),
+    observed_at TEXT NOT NULL
+);
+"""
+
 INDICES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_workflows_cache_key "
     "ON workflows(cache_key);",
+    # T-JOBS-RECOVERY: newest-first cross-session listing orders by created_at.
+    "CREATE INDEX IF NOT EXISTS idx_workflows_created "
+    "ON workflows(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_provenance_created_at "
     "ON provenance_records(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_cache_entries_last_accessed "
     "ON cache_entries(last_accessed_at);",
+    "CREATE INDEX IF NOT EXISTS idx_size_obs_lookup "
+    "ON size_observations(backend_id, dataset_id, signature);",
 ]
 
 
@@ -77,5 +123,6 @@ ALL_DDL: list[str] = [
     PROVENANCE_DDL,
     ACCEPTANCE_DDL,
     CACHE_DDL,
+    SIZE_OBSERVATIONS_DDL,
     *INDICES_DDL,
 ]

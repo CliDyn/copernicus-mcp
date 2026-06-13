@@ -1,0 +1,334 @@
+{
+  "entries": [
+    {
+      "bytes_per_unit": 1217808.0,
+      "dataset_id": "cams-global-atmospheric-composition-forecasts",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"total_aerosol_optical_depth_550nm\",\"data_format\":\"grib\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 347148.0,
+      "dataset_id": "cams-global-reanalysis-eac4",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"total_aerosol_optical_depth_550nm\",\"data_format\":\"grib\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 347148.0,
+      "dataset_id": "cams-global-reanalysis-eac4",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"total_column_ozone\",\"data_format\":\"grib\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 5391559.0,
+      "dataset_id": "cems-glofas-historical",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"river_discharge_in_the_last_24_hours\",\"data_format\":\"grib2\",\"hydrological_model\":\"lisflood\",\"product_type\":\"consolidated\",\"system_version\":\"version_3_1\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 21366022.0,
+      "dataset_id": "cems-glofas-historical",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"river_discharge_in_the_last_24_hours\",\"data_format\":\"grib2\",\"hydrological_model\":\"lisflood\",\"product_type\":\"consolidated\",\"system_version\":\"version_4_0\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 7293915.0,
+      "dataset_id": "efas-historical",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"river_discharge_in_the_last_6_hours\",\"data_format\":\"grib2\",\"system_version\":\"version_5_0\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 352396.0,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"near_surface_air_temperature\",\"experiment\":\"historical\",\"model\":\"cmcc_esm2\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 1332946.0,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"near_surface_air_temperature\",\"experiment\":\"historical\",\"model\":\"mpi_esm1_2_lr\",\"temporal_resolution\":\"daily\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 206496.2,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 3,
+      "signature": "{\"__level_count\":0,\"__variable\":\"near_surface_air_temperature\",\"experiment\":\"historical\",\"model\":\"mpi_esm1_2_lr\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 265186.0,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"near_surface_air_temperature\",\"experiment\":\"ssp2_4_5\",\"model\":\"mpi_esm1_2_lr\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 101858.3,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"precipitation\",\"experiment\":\"historical\",\"model\":\"access_cm2\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 146511.6,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 3,
+      "signature": "{\"__level_count\":0,\"__variable\":\"precipitation\",\"experiment\":\"historical\",\"model\":\"mpi_esm1_2_lr\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 166086.2,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"precipitation\",\"experiment\":\"historical\",\"model\":\"mri_esm2_0\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 116314.7,
+      "dataset_id": "projections-cmip6",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":3,\"__variable\":\"air_temperature\",\"experiment\":\"historical\",\"model\":\"mpi_esm1_2_lr\",\"temporal_resolution\":\"monthly\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 213957210.2,
+      "dataset_id": "projections-cordex-domains-single-levels",
+      "n_obs": 13,
+      "signature": "{\"__level_count\":0,\"__variable\":\"maximum_2m_temperature_in_the_last_24_hours\",\"experiment\":\"historical\",\"horizontal_resolution\":\"0_11_degree_x_0_11_degree\",\"temporal_resolution\":\"daily_mean\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 633454.0,
+      "dataset_id": "reanalysis-era5-land-timeseries",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"csv\",\"download_format\":\"unarchived\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 574954.0,
+      "dataset_id": "reanalysis-era5-land-timeseries",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"__multi\",\"data_format\":\"csv\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 1067277.5,
+      "dataset_id": "reanalysis-era5-land-timeseries",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"__multi\",\"data_format\":\"netcdf\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"geopotential\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"relative_humidity\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"temperature\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 249165.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"temperature\",\"data_format\":\"netcdf\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"u_component_of_wind\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":3,\"__variable\":\"temperature\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-pressure-levels-monthly-means",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":1,\"__variable\":\"temperature\",\"data_format\":\"grib\",\"product_type\":\"monthly_averaged_reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 256237.3,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"netcdf\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"__multi\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"mean_sea_level_pressure\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 1502666.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"sea_surface_temperature\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"surface_pressure\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"total_precipitation\",\"data_format\":\"grib\",\"product_type\":\"reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels-monthly-means",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"grib\",\"product_type\":\"monthly_averaged_reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2076588.0,
+      "dataset_id": "reanalysis-era5-single-levels-monthly-means",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"grib\",\"product_type\":\"monthly_averaged_reanalysis_by_hour_of_day\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 340777.8,
+      "dataset_id": "reanalysis-era5-single-levels-monthly-means",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"total_precipitation\",\"data_format\":\"netcdf\",\"product_type\":\"monthly_averaged_reanalysis\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 252052.0,
+      "dataset_id": "satellite-carbon-dioxide",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"co2\",\"processing_level\":\"level_2\",\"sensor_and_algorithm\":\"iasi_metop_a_nlis\",\"version\":\"10_1\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 62751933.0,
+      "dataset_id": "satellite-carbon-dioxide",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"xco2\",\"processing_level\":\"level_3\",\"sensor_and_algorithm\":\"merged_obs4mips\",\"version\":\"4_6\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 62751893.0,
+      "dataset_id": "satellite-methane",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"xch4\",\"processing_level\":\"level_3\",\"sensor_and_algorithm\":\"merged_obs4mips\",\"version\":\"4_6\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2108404.0,
+      "dataset_id": "satellite-ozone-v1",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"atmosphere_mole_content_of_ozone\",\"processing_level\":\"level_3\",\"version\":\"v2000\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 9718889.0,
+      "dataset_id": "satellite-sea-level-global",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"daily\",\"version\":\"vdt2021\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 46803128.0,
+      "dataset_id": "satellite-sea-surface-temperature",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"all\",\"processinglevel\":\"level_3c\",\"sensor_on_satellite\":\"slstr_on_sentinel_3a\",\"temporal_resolution\":\"daily\",\"version\":\"2_1\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 16478429.0,
+      "dataset_id": "satellite-sea-surface-temperature",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"all\",\"processinglevel\":\"level_4\",\"sensor_on_satellite\":\"combined_product\",\"temporal_resolution\":\"daily\",\"version\":\"2_1\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 935668.0,
+      "dataset_id": "satellite-soil-moisture",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"surface_soil_moisture_saturation\",\"time_aggregation\":\"daily\",\"type_of_record\":\"cdr\",\"type_of_sensor\":\"active\",\"version\":\"v202212\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 1574422.0,
+      "dataset_id": "satellite-soil-moisture",
+      "n_obs": 2,
+      "signature": "{\"__level_count\":0,\"__variable\":\"surface_soil_moisture_volumetric\",\"time_aggregation\":\"daily\",\"type_of_record\":\"cdr\",\"type_of_sensor\":\"combined\",\"version\":\"v202212\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 2607118.8,
+      "dataset_id": "satellite-soil-moisture",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"surface_soil_moisture_volumetric\",\"time_aggregation\":\"daily\",\"type_of_record\":\"cdr\",\"type_of_sensor\":\"combined\",\"version\":\"v202312\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 6616536.0,
+      "dataset_id": "seasonal-monthly-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"grib\",\"product_type\":\"monthly_mean\"}",
+      "source": "history"
+    },
+    {
+      "bytes_per_unit": 6615516.0,
+      "dataset_id": "seasonal-original-single-levels",
+      "n_obs": 1,
+      "signature": "{\"__level_count\":0,\"__variable\":\"2m_temperature\",\"data_format\":\"grib\"}",
+      "source": "history"
+    }
+  ],
+  "generated_at": "2026-06-13T15:14:39Z"
+}

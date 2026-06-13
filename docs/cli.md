@@ -27,6 +27,7 @@ copernicus-mcp marine estimate    --dataset ...        [OPTIONS]
 copernicus-mcp marine subset      --dataset ...        [OPTIONS]
 copernicus-mcp marine get-files   --dataset ...        [OPTIONS]
 copernicus-mcp marine check-status REQUEST_ID          [--json]
+copernicus-mcp jobs list                               [OPTIONS]
 ```
 
 ---
@@ -298,6 +299,33 @@ copernicus-mcp marine check-status 7b1ef... --json | jq '.status'
 
 ---
 
+## `jobs list`
+
+List recent jobs (downloads) recorded in the local state store, newest first — across sessions. Every per-job command needs a `request_id`, so this is how a fresh session rediscovers work submitted before a restart: list, then drive a specific job by its `request_id`. Identical content to the `copernicus_mcp_list_jobs` MCP tool.
+
+```
+copernicus-mcp jobs list [--status S] [--limit N] [--created-after TS] [--json]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--status` | Comma-separated statuses to keep: `queued,running,successful,failed,cancelled`. |
+| `--limit` | Maximum jobs returned (newest first; clamped to `1..500`; default 50). |
+| `--created-after` | ISO-8601 UTC lower bound (strict), e.g. `2026-06-01T00:00:00Z`. |
+| `--json` | Emit the raw listing object on stdout. |
+
+Example:
+
+```bash
+# everything recent
+copernicus-mcp jobs list
+
+# only in-flight, as JSON, pull the request ids
+copernicus-mcp jobs list --status queued,running --json | jq -r '.results[].request_id'
+```
+
+---
+
 ## Exit codes
 
 | Code | Meaning                                                                            |
@@ -384,7 +412,20 @@ Usage: copernicus-mcp cds estimate [OPTIONS]
   --json
 ```
 
-The `inputs` dict mirrors the cdsapi retrieve shape (`variable`, `year`, `month`, …, `area`). **`area` ordering: CDS uses `[north, west, south, east]` (NWSE)**, opposite of GIS WSEN. The estimator returns `estimated_size_bytes`, `queue_latency_tier` (light / medium / heavy), and `epistemic_status: "approximate"`.
+The `inputs` dict mirrors the cdsapi retrieve shape (`variable`, `year`, `month`, …, `area`). **`area` ordering: CDS uses `[north, west, south, east]` (NWSE)**, opposite of GIS WSEN. The estimator returns `estimated_size_bytes` (which **may be `null`** for whole-file products — honest "size unknown"), `epistemic_status` (`calibrated` / `curated_approximate` / `default_heuristic` / `unknown`), a `cost` block (`{units, limit, exceeds_limit}` — `exceeds_limit: true` means the server will reject the request), and `queue_latency_tier`. Estimates self-calibrate from completed downloads.
+
+## `cds apply-constraints`
+
+```text
+Usage: copernicus-mcp cds apply-constraints [OPTIONS]
+
+  --dataset-id TEXT     Required.
+  --inputs-file PATH    JSON file with a PARTIAL inputs dict, or ``-`` for
+                        stdin. Omit for empty inputs → full per-field vocabulary.
+  --json
+```
+
+Returns the still-valid values per field (`valid_remaining`). Empty inputs give every field's full value set; a partial selection narrows the rest. Read-only and anonymous (no PAT needed) — useful for discovering valid field values before composing a submit.
 
 ## `cds submit`
 
@@ -394,10 +435,27 @@ Usage: copernicus-mcp cds submit [OPTIONS]
   --dataset-id TEXT     Required.
   --inputs-file PATH    JSON file with the inputs dict; ``-`` for stdin.
   --yes                 Bypass the size + queue-tier confirmation gate.
+  --chunk-by TEXT       Split an over-limit request along the calendar axis
+                        (year|month|day); run the parts as one workflow.
+  --force-refresh       Re-run from scratch, bypassing the cache.
   --json
 ```
 
 Returns `{status: "queued", request_id, cache_key}` immediately. Without `--yes`, large or heavy requests print a confirmation prompt and exit with code 3 on non-interactive stdin.
+
+### Auto-chunking
+
+A request over the dataset's server-side cost limit is split automatically. With `--chunk-by year|month|day` the split happens on the first call; with `--yes` (and no `--chunk-by`) an over-limit request is split by year. The command then returns a parent `request_id` that drives the whole multi-file set:
+
+```text
+copernicus-mcp cds submit --dataset-id <id> --inputs-file req.json --chunk-by year
+copernicus-mcp cds wait <parent_id>            # advances every chunk to completion
+copernicus-mcp cds download <parent_id> --json # lists one file descriptor per chunk
+```
+
+`cds wait` / `cds download` / `cds cancel` operate on the parent `request_id` transparently. `download` on a chunked parent prints the descriptor set (one file per chunk, ordered by chunk index) with a `merge_hint` — the CLI never recombines the parts.
+
+A large split asks for confirmation: more than `budget.cds_auto_chunk_confirm_above` parts (default 30) prints a confirmation prompt; more than `cds_auto_chunk_reconfirm_above` (default 100) is a heavier batch that prompts a second time. At the CLI a single `--yes` (or one interactive confirm) covers both tiers — the repeat gate exists for the agent path, where the model must escalate to a human. Over `cds_auto_chunk_max_chunks` (default 366) the request is rejected; raise that config to allow a bigger fan-out.
 
 ### T&C errors
 

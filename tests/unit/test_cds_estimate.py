@@ -102,6 +102,89 @@ def _multi_day_request() -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
+# T-CDS-EST2-001: costing wired into the backend estimate path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_estimate_wires_costing_into_envelope(foundation, monkeypatch) -> None:
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    async def _fake(*_a, **_k):
+        return CostingResult(units=24.0, limit=121000.0)
+
+    monkeypatch.setattr("copernicus_mcp.backends.cds.backend.fetch_costing", _fake)
+    out = await _backend(foundation).estimate(_single_day_request())
+    assert out["cost"] == {
+        "units": 24.0,
+        "limit": 121000.0,
+        "exceeds_limit": False,
+        "source": "costing_api",
+    }
+
+
+@pytest.mark.asyncio
+async def test_estimate_whole_file_cost_one_is_unknown(foundation, monkeypatch) -> None:
+    """WP3 case A: a whole-file product (cost==1, single field) is honestly
+    reported as size-unknown rather than a confident under-estimate."""
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    async def _fake(*_a, **_k):
+        return CostingResult(units=1.0, limit=10000.0)
+
+    monkeypatch.setattr("copernicus_mcp.backends.cds.backend.fetch_costing", _fake)
+    out = await _backend(foundation).estimate(
+        {
+            "dataset_id": "satellite-carbon-dioxide",
+            "inputs": {
+                "processing_level": "level_3",
+                "variable": "xco2",
+                "sensor_and_algorithm": "merged_obs4mips",
+                "version": "4_5",
+            },
+        }
+    )
+    assert out["estimated_size_bytes"] is None
+    assert out["estimated_size_human"] is None
+    assert out["epistemic_status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_estimate_costing_none_is_unknown(foundation) -> None:
+    """v2 honesty: costing unavailable + no local calibration → size unknown
+    (no guess); cost block None."""
+    out = await _backend(foundation).estimate(_single_day_request())
+    assert out["estimated_size_bytes"] is None
+    assert out["epistemic_status"] == "unknown"
+    assert out["cost"] is None
+
+
+@pytest.mark.asyncio
+async def test_estimate_uses_recorded_calibration(foundation) -> None:
+    """T-CDS-EST2-004: a prior observation of this request shape makes the
+    estimate ``calibrated`` (loop closed end-to-end through persistence)."""
+    from copernicus_mcp.backends.cds.calibration import signature
+
+    req = _single_day_request()
+    await foundation.persistence.record_size_observation(
+        {
+            "observation_id": "o1",
+            "backend_id": "cds",
+            "dataset_id": req["dataset_id"],
+            "signature": signature(req["inputs"]),
+            "cost_units": 10.0,
+            "size_bytes": 50_000,
+            "area_fraction": 1.0,
+            "request_id": None,
+            "observed_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    out = await _backend(foundation).estimate(req)
+    assert out["epistemic_status"] == "calibrated"
+    assert out["calibration_observations"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Canonical envelope shape
 # ---------------------------------------------------------------------------
 
@@ -113,13 +196,10 @@ async def test_estimate_returns_canonical_envelope(foundation) -> None:
     backend = _backend(foundation)
     out = await backend.estimate(_single_day_request())
     assert out["type"] == "free"
-    assert isinstance(out["estimated_size_bytes"], int)
-    assert isinstance(out["estimated_size_human"], str)
-    # T-CDS-011.6: epistemic_status is now per-dataset; ERA5 is curated.
-    assert out["epistemic_status"] in {
-        "curated_approximate",
-        "default_heuristic",
-    }
+    # v2: no byte size without local calibration.
+    assert out["estimated_size_bytes"] is None
+    assert out["estimated_size_human"] is None
+    assert out["epistemic_status"] == "unknown"
     assert isinstance(out["advisory_message"], str)
 
 
@@ -145,8 +225,9 @@ async def test_estimate_scales_with_cardinality(foundation) -> None:
     backend = _backend(foundation)
     small = await backend.estimate(_single_day_request())
     big = await backend.estimate(_multi_day_request())
+    # fields_count is always surfaced (the cost driver); the byte size is only
+    # filled once locally calibrated.
     assert big["fields_count"] > small["fields_count"]
-    assert big["estimated_size_bytes"] > small["estimated_size_bytes"]
     # 2 vars × 31 days × 24 hours = 1488; small was 1.
     assert big["fields_count"] == 1488
 
@@ -175,28 +256,25 @@ async def test_estimate_handles_pressure_level_dimension(foundation) -> None:
 
 
 @pytest.mark.asyncio
-async def test_estimate_area_subset_reduces_size(foundation) -> None:
-    """``area: [N, W, S, E]`` (research §6.9.2) restricts spatial coverage,
-    which reduces download size proportionally."""
+async def test_estimate_area_subset_keeps_field_count(foundation) -> None:
+    """``area`` restricts spatial coverage but NOT field count (the cost driver
+    CDS bills on). Byte-size scaling by area is exercised via the calibrated
+    path; here we pin that field count is area-invariant."""
     backend = _backend(foundation)
-    global_req = _single_day_request()
-    out_global = await backend.estimate(global_req)
+    out_global = await backend.estimate(_single_day_request())
 
     europe_req = _single_day_request()
     europe_req["inputs"]["area"] = [60.0, -10.0, 35.0, 40.0]  # type: ignore[index]
     out_europe = await backend.estimate(europe_req)
-    # Europe area is much smaller than global — bytes proportionally smaller.
-    assert out_europe["estimated_size_bytes"] < out_global["estimated_size_bytes"]
-    # Field count is unchanged — area only scales bytes per field.
     assert out_europe["fields_count"] == out_global["fields_count"]
 
 
 @pytest.mark.asyncio
-async def test_estimate_unknown_dataset_uses_default_bytes_per_field(
+async def test_estimate_unknown_dataset_is_unknown(
     foundation,
 ) -> None:
-    """Datasets not in the bytes-per-field map fall back to a conservative
-    default (overestimate is safer for the confirmation gate)."""
+    """v2: an uncalibrated dataset reports size unknown with a probe hint, not a
+    fabricated default-heuristic number."""
     backend = _backend(foundation)
     out = await backend.estimate({
         "dataset_id": "made-up-dataset-not-in-the-map",
@@ -208,11 +286,9 @@ async def test_estimate_unknown_dataset_uses_default_bytes_per_field(
             "time": ["00:00"],
         },
     })
-    # Unknown dataset still produces a usable estimate.
-    assert out["estimated_size_bytes"] > 0
-    # Advisory mentions the fallback so the user knows the estimate is rougher.
-    assert "default" in out["advisory_message"].lower() or \
-           "unknown" in out["advisory_message"].lower()
+    assert out["estimated_size_bytes"] is None
+    assert out["epistemic_status"] == "unknown"
+    assert "unknown" in out["advisory_message"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +371,7 @@ async def test_estimate_strips_options_magic_key(foundation) -> None:
     params = _single_day_request()
     params["__options"] = {"confirmed": True}
     out = await backend.estimate(params)
-    assert out["estimated_size_bytes"] > 0
+    assert out["fields_count"] > 0  # envelope returned, __options stripped
 
 
 @pytest.mark.asyncio
@@ -331,8 +407,7 @@ async def test_estimate_handles_scalar_string_fields(foundation) -> None:
             "grid": "1.0/1.0",
         },
     })
-    assert out["estimated_size_bytes"] > 0
-    assert out["fields_count"] >= 1
+    assert out["fields_count"] >= 1  # MARS scalar fields → cardinality 1, no crash
 
 
 @pytest.mark.asyncio
@@ -484,9 +559,9 @@ def test_count_fields_empty_list_value_counts_as_one() -> None:
     assert n == 1
 
 
-def test_estimate_returns_exact_bytes_for_known_dataset() -> None:
-    """Code-reviewer T-CDS-004 LOW: pin the formula. ERA5-SL is
-    2_100_000 bytes/field × 1 field × 1.0 area = 2_100_000."""
+def test_estimate_uncalibrated_known_dataset_is_unknown() -> None:
+    """v2: even a previously-curated dataset has no byte size without local
+    calibration — honest unknown, not a fabricated per-field number."""
     from copernicus_mcp.backends.cds.estimator import estimate
 
     out = estimate(
@@ -499,14 +574,15 @@ def test_estimate_returns_exact_bytes_for_known_dataset() -> None:
             "time": ["00:00"],
         },
     )
-    assert out["estimated_size_bytes"] == 2_100_000
+    assert out["estimated_size_bytes"] is None
+    assert out["epistemic_status"] == "unknown"
     assert out["fields_count"] == 1
 
 
 def test_estimate_does_not_crash_on_nan_area() -> None:
-    """End-to-end: NaN in area used to bubble up as ValueError from
-    the int() cast. Now the area_fraction guard returns 1.0, the
-    estimate stays usable, no Python traceback at the boundary."""
+    """End-to-end: NaN in area used to bubble up as ValueError from the int()
+    cast. The area_fraction guard returns 1.0; with no calibration the size is
+    unknown — and crucially, no Python traceback at the boundary."""
     from copernicus_mcp.backends.cds.estimator import estimate
 
     out = estimate(
@@ -520,8 +596,7 @@ def test_estimate_does_not_crash_on_nan_area() -> None:
             "area": [float("nan"), 0.0, 0.0, 1.0],
         },
     )
-    # Treated as global, so full bytes-per-field estimate.
-    assert out["estimated_size_bytes"] == 2_100_000
+    assert out["estimated_size_bytes"] is None  # unknown, no crash
 
 
 # ---------------------------------------------------------------------------
@@ -533,31 +608,18 @@ def test_estimate_does_not_crash_on_nan_area() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_estimate_curated_dataset_marks_curated_approximate() -> None:
-    """ERA5 single-levels is in the curated bytes-per-field map → the
-    estimate carries ``epistemic_status="curated_approximate"``."""
+def test_estimate_uncalibrated_is_unknown_for_curated_and_unknown_datasets() -> None:
+    """v2: epistemic_status is ``unknown`` for any uncalibrated request — the old
+    ``curated_approximate`` / ``default_heuristic`` guesses are gone (they gave a
+    falsely-confident number; the user wants honest unknown until local data)."""
     from copernicus_mcp.backends.cds.estimator import estimate
 
-    out = estimate(
-        "reanalysis-era5-single-levels",
-        {"variable": ["t2m"], "year": ["2024"], "month": ["01"],
-         "day": ["01"], "time": ["00:00"]},
-    )
-    assert out["epistemic_status"] == "curated_approximate"
-
-
-def test_estimate_unknown_dataset_marks_default_heuristic() -> None:
-    """A dataset id not in the curated map falls back to default
-    heuristic (±10×). Caller can branch on this signal rather than
-    parsing the advisory_message string."""
-    from copernicus_mcp.backends.cds.estimator import estimate
-
-    out = estimate(
-        "not-a-real-dataset-xyzzy",
-        {"variable": ["x"], "year": ["2024"], "month": ["01"],
-         "day": ["01"], "time": ["00:00"]},
-    )
-    assert out["epistemic_status"] == "default_heuristic"
+    inputs = {"variable": ["t2m"], "year": ["2024"], "month": ["01"],
+              "day": ["01"], "time": ["00:00"]}
+    curated = estimate("reanalysis-era5-single-levels", inputs)
+    unknown_ds = estimate("not-a-real-dataset-xyzzy", inputs)
+    assert curated["epistemic_status"] == "unknown"
+    assert unknown_ds["epistemic_status"] == "unknown"
 
 
 def test_estimate_runtime_compatible_when_dataset_in_catalogue() -> None:

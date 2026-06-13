@@ -1,10 +1,10 @@
 """MCP server entrypoint (T-031).
 
-Wires the orchestrator + CMEMS tools to a FastMCP stdio server. Three
-resource templates are registered: ``copernicus://datasets/cmems/{id}``,
-``copernicus://files/{cache_key}``, and ``copernicus://provenance/{record_id}``.
-``copernicus://jobs/{request_id}`` is deferred (logged in
-``the project decision log``).
+Wires the orchestrator + CMEMS tools to a FastMCP stdio server. Resource
+templates: ``copernicus://datasets/cmems/{id}``, ``copernicus://files/{cache_key}``,
+``copernicus://provenance/{record_id}``, and ``copernicus://jobs/{request_id}``
+(a single workflow row). The ``copernicus_mcp_list_jobs`` tool enumerates recent
+jobs for cross-session recovery.
 
 the project conventions invariants this layer enforces:
 - #1 large-data: tools return descriptors only (enforced upstream in
@@ -126,6 +126,30 @@ def build_server(
     )
     async def _status() -> dict[str, Any]:
         return await orchestrator.status()
+
+    @server.tool(
+        name="copernicus_mcp_list_jobs",
+        description=(
+            "List recent submitted jobs (downloads) recorded in the local "
+            "state store, so a fresh session can recover work after a restart "
+            "without already holding a request_id. Each entry carries "
+            "request_id, backend, dataset, operation, status, and "
+            "created/updated times (failed jobs also include error_class). "
+            "Optional filters: status (any of queued/running/successful/"
+            "failed/cancelled), limit (default 50, capped at 500), "
+            "created_after (ISO-8601 UTC, strict lower bound). Feed a returned "
+            "request_id to the per-backend status/fetch/cancel tools. No "
+            "credential values appear in the output."
+        ),
+    )
+    async def _list_jobs(
+        status: list[str] | None = None,
+        limit: int = 50,
+        created_after: str | None = None,
+    ) -> dict[str, Any]:
+        return await orchestrator.list_jobs(
+            status=status, limit=limit, created_after=created_after
+        )
 
     @server.resource("copernicus://datasets/cmems/{dataset_id}")
     async def _dataset_resource(dataset_id: str) -> str:

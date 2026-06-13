@@ -24,11 +24,17 @@ def build_size_confirmation(
     *,
     tool_name: str,
     backend: str,
-    estimated_size_bytes: int,
+    estimated_size_bytes: int | None,
     threshold_bytes: int,
     source: str,
 ) -> ConfirmationRequired:
-    """Build a size-threshold confirmation per research §11.6.2."""
+    """Build a size-threshold confirmation per research §11.6.2.
+
+    ``estimated_size_bytes`` may be ``None`` (T-CDS-EST2: a whole-file product
+    whose size is unknowable from request shape) — the ``estimated_size_gb``
+    field is then omitted rather than computed from a missing number. CMEMS
+    callers always pass an int, so their payload is unchanged.
+    """
     payload: dict[str, Any] = {
         "confirmation_required": True,
         "reason": "estimated_size_threshold_exceeded",
@@ -40,7 +46,6 @@ def build_size_confirmation(
             "bytes": threshold_bytes,
             "source": source,
         },
-        "estimated_size_gb": round(estimated_size_bytes / 1_000_000_000, 3),
         # codex CX-M1: MCP tools expose ``confirmed`` as a top-level
         # Pydantic field (``extra="forbid"`` rejects an ``options`` sub-
         # dict). The CLI-orchestrator-direct path builds
@@ -54,4 +59,6 @@ def build_size_confirmation(
             "backend": backend,
         },
     }
+    if estimated_size_bytes is not None:
+        payload["estimated_size_gb"] = round(estimated_size_bytes / 1_000_000_000, 3)
     return ConfirmationRequired(payload)

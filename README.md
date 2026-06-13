@@ -5,9 +5,9 @@
 Two backends are currently supported, both using Copernicus services that are free to register for: [Copernicus Marine](https://data.marine.copernicus.eu/register), [CDS](https://cds.climate.copernicus.eu/), [ADS](https://ads.atmosphere.copernicus.eu/), and [EWDS](https://ewds.climate.copernicus.eu/).
 
 - **[Copernicus Marine](https://marine.copernicus.eu/) (CMEMS)** — 1,251 datasets across 306 products in the bundled catalogue snapshot: physics, biogeochemistry, sea ice, ocean colour, SST, sea level, waves, wind, and in-situ observations. Supports discovery, subsetting, native-file retrieval, and sync or async downloads.
-- **[Climate Data Store family](https://cds.climate.copernicus.eu/) (CDS / ADS / EWDS)** — 164 datasets in the bundled snapshot across reanalysis, satellite, in-situ, atmospheric composition (CAMS), and emergency-management (EFAS / GloFAS / CEMS) data. Uses queue-based asynchronous retrieval with offline discovery from a bundled catalogue snapshot.
+- **[Climate Data Store family](https://cds.climate.copernicus.eu/) (CDS / ADS / EWDS)** — 164 datasets in the bundled snapshot across reanalysis, satellite, in-situ, atmospheric composition (CAMS), and emergency-management (EFAS / GloFAS / CEMS) data. Uses queue-based asynchronous retrieval with offline discovery from a bundled catalogue snapshot. A request that exceeds a dataset's server-side cost limit is split automatically along the calendar axis and returned as one multi-file workflow under a single request id.
 
-Ask in plain English. The server finds, filters, estimates, and downloads. Large downloads are size-estimated, gated for explicit confirmation, cached, and returned as a `filepath + metadata + provenance` descriptor rather than inline bytes. Every retrieval lands with an MD5-sealed sidecar JSON so the exact request is reproducible later.
+Ask in plain English. The server finds, filters, estimates, and downloads. Large downloads are size-estimated, gated for explicit confirmation, cached, and returned as a `filepath + metadata + provenance` descriptor rather than inline bytes. Every retrieval lands with an MD5-sealed sidecar JSON so the exact request is reproducible later. Long-running requests run asynchronously — submit one and poll it later, or list and reclaim your past jobs from a fresh session, because the local job store survives restarts.
 
 > *"Get me Mediterranean Sea salinity forecasts for next week, then fetch the AMOC strength time series for the last 5 years."*
 
@@ -124,19 +124,23 @@ The discovery routing is covered offline by `bench/marine_routing_bench.py`; the
 | Backend | Tool | Purpose |
 |---|---|---|
 | **diagnostic** | `copernicus_mcp_status` | Configured backends, cache size, override hints. No credentials in output. |
+| | `copernicus_mcp_list_jobs` | Recover past jobs across sessions: list recent submissions (id, backend, dataset, status) from local state — no `request_id` needed after a restart. |
 | **CMEMS** | `marine_search_groups` → `marine_search_products` → `marine_search_datasets` | Hierarchical discovery — narrows ~1251 datasets in two hops via 47 hand-curated routing groups. Offline, no embeddings, no LLM at query time. |
 | | `marine_describe_dataset` | Full metadata: variables, axes, spatial / temporal extent, services, DOI. |
 | | `marine_get_coordinates` | The dataset's actual lon/lat/depth/time axes — summarised for long axes. |
-| | `marine_estimate_subset` | Preview download size before running it. |
+| | `marine_estimate_subset` | Preview the download size before running it — an _approximate_ estimate, not a guarantee. |
 | | `marine_subset_dataset` | Download a spatio-temporal subset. Large requests require explicit confirmation. `async_mode=true` returns immediately. |
 | | `marine_list_files` → `marine_get_files` | For sparse / in-situ datasets (CORA, EasyCORA, INSITU-BGC, MULTIOBS): filter by bbox / time / variables, then download the precise file list. |
 | | `marine_check_status`, `marine_cancel_subset` | Async lifecycle. |
 | **CDS / ADS / EWDS** | `cds_search_groups` → `cds_search_datasets` | Hierarchical group discovery + filters (bbox / time_range / variable / domain / category). |
 | | `cds_describe_dataset`, `cds_apply_constraints` | Bundled snapshot + live narrowing against the store's constraints endpoint. |
-| | `cds_estimate_request` | Heuristic byte-size + queue-tier (light / medium / heavy). |
+| | `cds_estimate_request` | Self-calibrating size estimate + costing pre-flight (flags requests the server will reject); honest "unknown" for whole-file products. The byte size is _approximate_ (see note below). |
+| | `cds_apply_constraints` | Valid field values for a (partial) request; anonymous. |
 | | `cds_submit_request`, `cds_check_request_status`, `cds_download_request_result`, `cds_cancel_request` | Async queue lifecycle. T&C-not-accepted surfaces as a structured error with the accept-URL. |
 
 Tools that return large data return `{filepath, uri, metadata, provenance}` — never inline bytes. The `copernicus://files/{cache_key}`, `copernicus://jobs/{request_id}`, and `copernicus://provenance/{record_id}` resources surface the cached artifacts to MCP clients that prefer the resource API.
+
+> **Size estimates are approximate.** The byte size from `cds_estimate_request` / `marine_estimate_subset` (and the size shown at the confirmation gate) is a heuristic or calibration-based figure and can be wrong by a large factor — treat it as a rough order-of-magnitude, not a guarantee. Don't rely on it for hard limits, quotas, billing, or disk provisioning. The CDS server cost units are exact; only the byte size is uncertain. Every CDS estimate response also carries a `size_estimate_caveat` field restating this.
 
 For complete schemas read the inline tool descriptions your MCP client surfaces, or the detailed reference in [`docs/tools.md`](docs/tools.md).
 
@@ -180,6 +184,8 @@ Hierarchical discovery uses bundled JSON manifests (slim records → enriched ca
 The system runs out of the box. Override via env vars (`COPERNICUS_MCP_CACHE_DIR`, `COPERNICUS_MCP_LOG_LEVEL`, `COPERNICUS_MCP_ENABLED_BACKENDS=cmems,cds`), a YAML file at `~/.config/copernicus-mcp/config.yaml`, or `--cache-dir PATH` on the entry-point binary.
 
 Cache directories are per-OS via [`platformdirs`](https://platformdirs.readthedocs.io/): Linux `~/.cache/copernicus-mcp/`, macOS `~/Library/Caches/copernicus-mcp/`, Windows `%LOCALAPPDATA%\copernicus-mcp\Cache\`.
+
+> **Download location is fixed at startup.** To change where files are written, set `COPERNICUS_MCP_CACHE_DIR` (or `--cache-dir` / `config.yaml`) **before** launching the server — there is no per-request override and it cannot be changed while the server is running. Decide this before pointing an MCP client (or agent) at the server; changing it later requires a restart.
 
 Full reference: [`docs/setup.md`](docs/setup.md).
 

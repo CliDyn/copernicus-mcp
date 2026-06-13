@@ -627,6 +627,116 @@ def test_search_keyword_no_match_returns_empty() -> None:
     assert results == []
 
 
+def test_search_keyword_multiword_matches_via_constraints() -> None:
+    """T-CDS-KWFIX: a natural multi-word keyword matches when every token
+    appears across the record's searchable surface — STAC text PLUS the
+    bundled constraints' ``variable`` enum. Word order is irrelevant.
+
+    Before the fix the keyword filter did a single literal-substring test,
+    so ``"2m temperature"`` only hit datasets whose prose happened to
+    contain that exact contiguous phrase (one coincidental match) and
+    missed ERA5, whose ``2m_temperature`` lives only in constraints."""
+    from copernicus_mcp.backends.cds.catalogue import search
+
+    ids = {r["id"] for r in search(keyword="2m temperature", store="cds")}
+    # Both tokens ("2m", "temperature") appear in the ``2m_temperature``
+    # constraint variable even though the STAC prose has no contiguous
+    # "2m temperature" phrase.
+    assert "reanalysis-era5-land" in ids
+    assert "reanalysis-era5-single-levels" in ids
+
+
+def test_search_keyword_matches_canonical_variable_name() -> None:
+    """T-CDS-KWFIX: the canonical CDS variable id (``2m_temperature``)
+    lives only in the constraints snapshot, not the STAC prose. Keyword
+    search now folds constraints into the haystack so an agent can paste a
+    variable id straight into ``keyword`` and find the dataset."""
+    from copernicus_mcp.backends.cds.catalogue import search
+
+    ids = {r["id"] for r in search(keyword="2m_temperature", store="cds")}
+    assert "reanalysis-era5-land" in ids
+
+
+def test_search_keyword_multitoken_is_AND_not_OR() -> None:
+    """T-CDS-KWFIX: a multi-token keyword combines with AND — the result
+    is a subset of each single-token result set, and is empty if any token
+    matches nothing. ``"temperature wind"`` keeps only datasets that have
+    BOTH (ERA5 single levels carries ``2m_temperature`` and
+    ``10m_u_component_of_wind``)."""
+    from copernicus_mcp.backends.cds.catalogue import search
+
+    temp = {r["id"] for r in search(keyword="temperature", store="cds")}
+    wind = {r["id"] for r in search(keyword="wind", store="cds")}
+    both = {r["id"] for r in search(keyword="temperature wind", store="cds")}
+    assert both <= temp
+    assert both <= wind
+    assert "reanalysis-era5-single-levels" in both
+    # An impossible token zeroes the set even though "temperature" alone
+    # matches dozens.
+    assert search(keyword="temperature zzznotarealtoken9999", store="cds") == []
+
+
+def test_search_keyword_ranks_exact_phrase_above_token_fallback() -> None:
+    """T-CDS-KWFIX (codex review): token-AND broadened recall so generic
+    ERA5 prose satisfies "air" and "quality" as separate tokens. Combined
+    with snapshot-order truncation at ``limit``, that buried the real CAMS
+    air-quality datasets (they sat at ranks 36-41). Keyword results are
+    now relevance-ranked — a contiguous-phrase hit outranks a token-only
+    fallback — so a small ``limit`` keeps the on-topic datasets."""
+    from copernicus_mcp.backends.cds.catalogue import search
+
+    top = [r["id"] for r in search(keyword="air quality", limit=10)]
+    # The real air-quality datasets (CAMS, in the ADS store, scanned AFTER
+    # cds) must appear in the first page rather than being buried behind
+    # generic ERA5 reanalysis that only matched "air"+"quality" separately.
+    assert any("air-quality" in i for i in top), top
+    cams_first = next(i for i, x in enumerate(top) if "air-quality" in x)
+    era5_first = next(
+        (i for i, x in enumerate(top) if x.startswith("reanalysis-era5")),
+        len(top),
+    )
+    assert cams_first < era5_first, top
+
+
+def test_search_keyword_ranking_normalises_inner_whitespace() -> None:
+    """T-CDS-KWFIX (codex r2): the matcher collapses whitespace via
+    ``split()``, so ``"air  quality"`` (double space) and ``"air\\tquality"``
+    match the same records as ``"air quality"``. The relevance scorer must
+    normalise identically — otherwise the exact-phrase tier never fires for
+    the irregular-whitespace variant and the on-topic CAMS datasets get
+    re-buried under snapshot order."""
+    from copernicus_mcp.backends.cds.catalogue import search
+
+    for q in ("air  quality", "air\tquality"):
+        top = [r["id"] for r in search(keyword=q, limit=10)]
+        assert any("air-quality" in i for i in top), (q, top)
+        cams_first = next(i for i, x in enumerate(top) if "air-quality" in x)
+        era5_first = next(
+            (i for i, x in enumerate(top) if x.startswith("reanalysis-era5")),
+            len(top),
+        )
+        assert cams_first < era5_first, (q, top)
+
+
+def test_search_keyword_path_uses_word_boundary_not_substring() -> None:
+    """T-CDS-KWFIX (codex/cr review, coverage gap): pin the headline
+    precision property ON THE KEYWORD PATH itself, not only on the
+    ``variable`` filter it delegates to. A naive per-token substring
+    reimplementation would make ``ice`` match "Service" and ``wind`` match
+    "window"; word-boundary matching must not."""
+    from copernicus_mcp.backends.cds.catalogue import _record_matches_keyword
+
+    rec = {
+        "id": "x-product",
+        "title": "Copernicus Climate Change Service window product",
+        "description": "no relevant variables in this prose",
+        "keywords": [],
+    }
+    assert _record_matches_keyword(rec, "ice") is False  # not inside "Service"
+    assert _record_matches_keyword(rec, "wind") is False  # not inside "window"
+    assert _record_matches_keyword(rec, "climate") is True  # real word boundary
+
+
 def test_search_limit_truncates_results() -> None:
     from copernicus_mcp.backends.cds.catalogue import search
 

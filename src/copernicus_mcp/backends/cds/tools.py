@@ -14,7 +14,7 @@ canonical ``ErrorRecord`` content for ``isError=true`` MCP wire responses.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -84,7 +84,46 @@ class CdsSubmitRequestInput(CdsRetrieveRequest):
             "When false (default), submits estimated above the configured "
             "size threshold or with queue tier ``medium``/``heavy`` raise "
             "``ConfirmationRequired`` so the caller (LLM agent or CLI) can "
-            "prompt the user before paying the queue / download cost."
+            "prompt the user before paying the queue / download cost. Also "
+            "accepts the auto-chunking proposal at the default ``year`` "
+            "granularity when no ``chunk_by`` is given."
+        ),
+    )
+    chunk_by: Literal["year", "month", "day"] | None = Field(
+        default=None,
+        description=(
+            "Calendar granularity for splitting a request that exceeds the "
+            "dataset's server-side cost limit. When the first submit returns a "
+            "``cost_limit_requires_chunking`` proposal, re-submit with chunk_by "
+            "set to year, month, or day (or confirmed=true to accept the "
+            "suggested year). The parts run as one logical workflow under a "
+            "single parent request_id; the result is a multi-file set, one file "
+            "per chunk (the MCP never stitches them)."
+        ),
+    )
+    auto_chunk: bool = Field(
+        default=True,
+        description=(
+            "Set false to disable auto-chunking for this request: an over-limit "
+            "request then raises the manual-split ValidationError instead of "
+            "proposing a split."
+        ),
+    )
+    force_refresh: bool = Field(
+        default=False,
+        description=(
+            "Set true to bypass the cache/idempotency check and re-run from "
+            "scratch — including re-running every chunk of a previously "
+            "completed chunked parent (e.g. to repopulate evicted chunk files)."
+        ),
+    )
+    confirm_large_fanout: bool = Field(
+        default=False,
+        description=(
+            "Second, deliberate ack for a very large auto-chunk split. When a "
+            "split would launch more CDS jobs at once than the reconfirm "
+            "threshold, confirmed=true alone is NOT enough — also set this true. "
+            "Surfaced by the 'auto_chunk_job_count_large' confirmation."
         ),
     )
 
@@ -166,8 +205,15 @@ async def cds_search_datasets(
     ``cds_describe_dataset`` for the full STAC metadata.
 
     Inputs (all optional, AND-combined):
-      - keyword: free-text match against title / description / keywords
-        of bundled catalogue entries.
+      - keyword: free-text match. The query is split on whitespace and a
+        dataset is kept only if EVERY word matches (word order is
+        irrelevant) — each word either hits id / title / description /
+        keywords / summaries at a word boundary OR names a variable in the
+        dataset's constraints, so ``"2m temperature"`` finds ERA5 even
+        though that phrase appears nowhere in the prose. Results are
+        relevance-ranked (exact-phrase hits first), so a small ``limit``
+        keeps the most on-topic datasets. Prefer 1-3 content words;
+        for a specific variable, ``variable=`` is more precise.
       - store: filter (cds / ads / ewds).
       - bbox: ``(west, south, east, north)`` WGS84 degrees. Records
         whose spatial extent intersects this bbox are kept. Antimeridian-
@@ -332,18 +378,38 @@ async def cds_estimate_request(
     *,
     orchestrator: WorkflowOrchestrator,
 ) -> dict[str, Any]:
-    """Heuristic byte-size estimate for a CDS retrieve request.
+    """Size + queue estimate for a CDS retrieve request.
 
-    cdsapi 0.7.7 has no programmatic estimation API; we derive the
-    estimate from request shape alone (research §6.7.4 option 1).
-    Always ``epistemic_status="approximate"`` (~±50%). Use this to
-    gauge submission cost before paying the queue.
+    Combines the CDS ``/costing`` pre-flight (the server's own cost units
+    and the dataset's per-request cost limit) with a calibrated/curated
+    bytes-per-unit factor. Use this to gauge submission cost before paying
+    the queue.
+
+    **The byte-size estimate is APPROXIMATE and can be wrong by a large
+    factor — do NOT rely on it for hard limits, quotas, billing, or disk
+    planning.** Treat it as a rough order-of-magnitude only. The ``cost``
+    units are exact; only the byte size is uncertain. Every response repeats
+    this disclaimer in the ``size_estimate_caveat`` field.
 
     Inputs: same shape as ``cds_submit_request``.
 
     Outputs:
-      - {estimated_size_bytes, estimated_size_human, fields_count,
-         queue_latency_tier, advisory_message, epistemic_status}.
+      - ``estimated_size_bytes`` / ``estimated_size_human``: **may be ``null``**
+        — for whole-file products whose size cannot be known from request
+        shape, the estimate is honestly reported as unknown rather than an
+        invented number.
+      - ``epistemic_status``: one of ``calibrated`` (from your own prior
+        downloads of this shape — most trustworthy), ``approximate`` (a
+        bundled-seed estimate, signature-matched — rough, can be off by a large
+        factor), or ``unknown`` (no calibration yet, or a whole-file product
+        whose size is unknowable until the first retrieval — no size is shown).
+      - ``cost``: ``{units, limit, exceeds_limit, source}`` from the costing
+        endpoint, or ``null`` if it was unreachable. ``exceeds_limit=true``
+        means the server will reject the request — narrow it (or, once
+        auto-chunking ships, it will be split automatically).
+      - ``fields_count``, ``queue_latency_tier``, ``advisory_message``.
+      - ``size_estimate_caveat``: always present — the plain-language warning
+        that the byte size is approximate and must not be relied on.
     """
     out: dict[str, Any] = await orchestrator.run(
         backend="cds",
@@ -376,6 +442,13 @@ async def cds_submit_request(
       - inputs: cdsapi-shaped request dict (variable, year, month,
         day, time, area, pressure_level, ...).
 
+        For the ``reanalysis-*`` families (ERA5, ERA5-Land, CERRA,
+        CARRA, ...) ``product_type`` is REQUIRED (e.g. ``"reanalysis"``;
+        see ``cds_describe_dataset`` ``available_inputs`` for the valid
+        values). Omitting it is rejected before submit — and on the live
+        server a multi-month request without it fails server-side with
+        ``Duplicate value for month`` after a long queue.
+
         WARNING — ``area`` ordering: CDS uses
         ``[north, west, south, east]`` (NWSE), the OPPOSITE of the
         common GIS ``[west, south, east, north]`` (WSEN). Sending
@@ -383,11 +456,30 @@ async def cds_submit_request(
         wrong region. Example for Mediterranean basin (lon -6..36.5,
         lat 30..46) the correct value is ``[46, -6, 30, 36.5]``.
       - confirmed (bool, default false): bypass the size + queue-tier
-        confirmation gate.
+        confirmation gate; also accepts an auto-chunking proposal at the
+        default ``year`` granularity when no ``chunk_by`` is given.
+      - chunk_by (year|month|day, optional): granularity for splitting a
+        request that exceeds the dataset's server-side cost limit. The
+        first submit of an over-limit request returns a
+        ``cost_limit_requires_chunking`` proposal; re-submit with chunk_by
+        set (or confirmed=true for the suggested year) to run the parts as
+        one logical multi-file workflow under a single parent request_id.
+      - auto_chunk (bool, default true): set false to reject the split and
+        get the manual-split ValidationError instead.
+      - force_refresh (bool, default false): re-run from scratch, bypassing
+        the cache (repopulates evicted chunk files of a completed parent).
+      - confirm_large_fanout (bool, default false): the SECOND ack for a very
+        large split. A split over the reconfirm threshold needs BOTH
+        confirmed=true and this; confirmed alone will not launch it.
 
     Outputs (queued):
       - {status: "queued", request_id, cache_key, result: {uri:
         "copernicus://jobs/<request_id>"}}.
+
+    Outputs (queued — chunked parent):
+      - {status: "queued", request_id, cache_key, chunked: true,
+        chunk_count: N, ...}. Poll / download / cancel the parent
+        request_id; the parts advance on each poll.
 
     Outputs (cache hit):
       - {status: "successful", cache_hit: true, request_id, cache_key,
@@ -397,6 +489,15 @@ async def cds_submit_request(
     options: dict[str, Any] = {}
     if payload.pop("confirmed", False):
         options["confirmed"] = True
+    chunk_by = payload.pop("chunk_by", None)
+    if chunk_by is not None:
+        options["chunk_by"] = chunk_by
+    if payload.pop("auto_chunk", True) is False:
+        options["auto_chunk"] = False
+    if payload.pop("force_refresh", False):
+        options["force_refresh"] = True
+    if payload.pop("confirm_large_fanout", False):
+        options["confirm_large_fanout"] = True
     out: dict[str, Any] = await orchestrator.run(
         backend="cds",
         operation="submit",

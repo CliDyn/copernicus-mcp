@@ -21,7 +21,10 @@ propagates to the asyncio runtime so the higher layer can decide policy
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,7 @@ from copernicus_mcp.backends.registry import BackendRegistry
 from copernicus_mcp.errors import BackendError, CopernicusMcpError, ValidationError
 from copernicus_mcp.errors.records import build_error_record
 from copernicus_mcp.observability.logger import bind_trace_id, get_logger
+from copernicus_mcp.persistence.protocol import WorkflowRecord
 from copernicus_mcp.version import __version__
 from copernicus_mcp.workflow.confirmation import ConfirmationRequired
 
@@ -332,6 +336,58 @@ class WorkflowOrchestrator:
             "config": sanitised_config,
         }
 
+    async def list_jobs(
+        self,
+        *,
+        status: Sequence[str] | None = None,
+        created_after: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """T-JOBS-RECOVERY: enumerate recent persisted jobs so a fresh agent can
+        recover them after a restart without already holding a ``request_id``.
+
+        Same trace_id + error-envelope discipline as ``status()`` — a diagnostic
+        listing must not crash mid-call. The payload is sanitised before return
+        (defence-in-depth, the project conventions invariant #2).
+        """
+        trace_id = uuid.uuid4().hex
+        with bind_trace_id(trace_id):
+            try:
+                return await self._list_jobs_inner(
+                    status=status, created_after=created_after, limit=limit
+                )
+            except CopernicusMcpError as exc:
+                return self._error_envelope(exc)
+            except Exception as exc:
+                safe = self._foundation.sanitiser.sanitise(str(exc))
+                return self._error_envelope(
+                    BackendError(
+                        f"unexpected error in list_jobs(): {safe}",
+                        record=build_error_record(
+                            "BackendError",
+                            message=f"unexpected error in list_jobs(): {safe}",
+                            error_subclass="list_jobs_failure",
+                            recovery_action="report_to_administrator",
+                        ),
+                    )
+                )
+
+    async def _list_jobs_inner(
+        self,
+        *,
+        status: Sequence[str] | None,
+        created_after: str | None,
+        limit: int,
+    ) -> dict[str, Any]:
+        _validate_status_filter(status)
+        normalized_after = _normalize_created_after(created_after)
+        rows = await self._foundation.persistence.list_workflows(
+            status=status, created_after=normalized_after, limit=limit
+        )
+        results = [_job_summary(row) for row in rows]
+        payload = {"results": results, "count": len(results)}
+        return self._foundation.sanitiser.sanitise(payload)  # type: ignore[no-any-return]
+
 
 def _cache_metrics(cache_dir: Path) -> tuple[int, int]:
     """Best-effort recursive size + entry count under ``cache_dir``.
@@ -389,3 +445,100 @@ def _missing_field(field: str, operation: str) -> ValidationError:
             context={"missing": [field], "operation": operation},
         ),
     )
+
+
+# --- T-JOBS-RECOVERY: job-listing helpers --------------------------------------
+
+_CANONICAL_STATUSES: frozenset[str] = frozenset(
+    {"queued", "running", "successful", "failed", "cancelled"}
+)
+
+
+def _validate_status_filter(status: Sequence[str] | None) -> None:
+    """Reject any non-canonical status value (the project conventions invariant #5)."""
+    if status is None:
+        return
+    invalid = sorted({s for s in status if s not in _CANONICAL_STATUSES})
+    if invalid:
+        msg = f"invalid status filter {invalid!r}"
+        raise ValidationError(
+            msg,
+            record=build_error_record(
+                "ValidationError",
+                message=msg,
+                recovery_action="modify_request_parameters",
+                context={"invalid": invalid, "allowed": sorted(_CANONICAL_STATUSES)},
+            ),
+        )
+
+
+def _normalize_created_after(created_after: str | None) -> str | None:
+    """Parse an ISO-8601 timestamp and normalise to the stored second-precision
+    UTC form (``YYYY-MM-DDTHH:MM:SSZ``), so the ``created_at >`` bound is a real
+    temporal comparison and not a lexical one — `…00:00:00.000Z` and
+    `…00:00:00+00:00` denote the same instant as a stored `…00:00:00Z` row and
+    must not slip past a strict lower bound.
+
+    Naive inputs are read as UTC (consistent with how the backends treat naive
+    timestamps). A non-ISO-8601 value is a ``ValidationError`` — the documented
+    contract is ISO-8601 UTC, so silently mis-comparing it would be dishonest.
+    """
+    if created_after is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(created_after)
+    except (ValueError, TypeError) as exc:
+        msg = f"created_after is not an ISO-8601 timestamp: {created_after!r}"
+        raise ValidationError(
+            msg,
+            record=build_error_record(
+                "ValidationError",
+                message=msg,
+                recovery_action="modify_request_parameters",
+                context={"field": "created_after", "value": created_after},
+            ),
+        ) from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC)
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _safe_json_obj(blob: str | None) -> dict[str, Any] | None:
+    """Parse a stored JSON column into a dict, or ``None`` on absence/garbage."""
+    if not blob:
+        return None
+    try:
+        data = json.loads(blob)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _job_summary(row: WorkflowRecord) -> dict[str, Any]:
+    """Compact, low-sensitivity view of a workflow row for the job listing.
+
+    ``response_json`` is structurally always NULL today (no result descriptor is
+    persisted on the row), so the output file lives in provenance / the per-id
+    fetch tool — not surfaced here. ``request_id`` keeps its key name so the
+    sanitiser allowlist preserves CDS UUID ids for follow-up poll/fetch.
+    """
+    request = _safe_json_obj(row.get("request_json"))
+    dataset: str | None = None
+    if request is not None:
+        candidate = request.get("dataset_id")
+        if isinstance(candidate, str) and candidate:
+            dataset = candidate
+    summary: dict[str, Any] = {
+        "request_id": row["request_id"],
+        "backend": row["backend_id"],
+        "operation": row["operation"],
+        "status": row["status"],
+        "dataset": dataset,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if row["status"] == "failed":
+        err = _safe_json_obj(row.get("error_record_json"))
+        if err is not None and isinstance(err.get("error_class"), str):
+            summary["error_class"] = err["error_class"]
+    return summary

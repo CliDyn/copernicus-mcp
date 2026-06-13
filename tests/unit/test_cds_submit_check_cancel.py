@@ -83,6 +83,7 @@ def _good_params() -> dict[str, Any]:
     return {
         "dataset_id": "reanalysis-era5-single-levels",
         "inputs": {
+            "product_type": ["reanalysis"],
             "variable": ["2m_temperature"],
             "year": ["2024"],
             "month": ["01"],
@@ -122,6 +123,108 @@ async def test_submit_without_credentials_raises_auth_error(foundation) -> None:
     backend = CdsBackend(foundation=foundation, credentials=None)
     with pytest.raises(AuthError):
         await backend.submit(_good_params())
+
+
+# ---------------------------------------------------------------------------
+# product_type required-field pre-flight (T-CDS-PT — WP3 field report)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_product_type_flags_dataset_that_requires_it() -> None:
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    inputs = {
+        "variable": ["10m_u_component_of_wind"],
+        "year": ["1993"], "month": ["01"], "day": ["01"], "time": ["00:00"],
+        "data_format": "netcdf",
+    }
+    vals = _missing_product_type("reanalysis-era5-single-levels", inputs)
+    assert vals is not None
+    assert "reanalysis" in vals
+
+
+def test_missing_product_type_none_when_present() -> None:
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    inputs = {"product_type": ["reanalysis"], "variable": ["x"], "year": ["1993"]}
+    assert _missing_product_type("reanalysis-era5-single-levels", inputs) is None
+
+
+def test_missing_product_type_none_for_dataset_without_it() -> None:
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    # satellite-sea-surface-temperature has bundled constraints but no
+    # product_type field → the rule must not fire.
+    assert (
+        _missing_product_type(
+            "satellite-sea-surface-temperature", {"variable": ["x"]}
+        )
+        is None
+    )
+
+
+def test_missing_product_type_treats_empty_as_missing() -> None:
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    assert (
+        _missing_product_type(
+            "reanalysis-era5-single-levels", {"product_type": [], "variable": ["x"]}
+        )
+        is not None
+    )
+
+
+def test_missing_product_type_skips_non_reanalysis_families() -> None:
+    """The rule is scoped to the ECMWF reanalysis families, where the
+    MARS-split 'Duplicate value for month' failure is evidenced. A
+    non-reanalysis dataset that merely LISTS product_type in the empty-
+    inputs constraints snapshot (satellite/insitu/sis/derived/...) is NOT
+    blocked — the snapshot can't tell required from optional, so we don't
+    guess (v2 review MEDIUM)."""
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    # satellite-fire-radiative-power defines product_type in constraints
+    # but is not a reanalysis dataset → must not fire.
+    assert (
+        _missing_product_type("satellite-fire-radiative-power", {"variable": ["x"]})
+        is None
+    )
+
+
+def test_missing_product_type_scalar_string_counts_as_present() -> None:
+    """A scalar-string product_type (``"reanalysis"``, not a list) is a
+    legal cdsapi shape and must count as present (reviewer LOW)."""
+    from copernicus_mcp.backends.cds.backend import _missing_product_type
+
+    assert (
+        _missing_product_type(
+            "reanalysis-era5-single-levels", {"product_type": "reanalysis"}
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_requires_product_type_before_network(foundation) -> None:
+    """A dataset that defines product_type (ERA5) must reject a submit that
+    omits it BEFORE any network/SDK call — turning the 40-min queue→MARS
+    "Duplicate value for month" failure into an instant, actionable error.
+    credentials=None proves the check fires pre-credential (so no network)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors import ValidationError
+
+    backend = CdsBackend(foundation=foundation, credentials=None)
+    params = {
+        "dataset_id": "reanalysis-era5-single-levels",
+        "inputs": {
+            "variable": ["10m_u_component_of_wind"],
+            "year": ["1993"], "month": ["01"], "day": ["01"], "time": ["00:00"],
+            "data_format": "netcdf",
+        },
+    }
+    with pytest.raises(ValidationError) as exc:
+        await backend.submit(params)
+    assert "product_type" in str(exc.value).lower()
 
 
 def _fake_remote(request_id: str = "abc-123") -> MagicMock:
@@ -316,6 +419,7 @@ async def test_submit_gate_above_size_threshold_raises_confirmation(
     big_params = {
         "dataset_id": "reanalysis-era5-pressure-levels",
         "inputs": {
+            "product_type": ["reanalysis"],
             "variable": ["temperature"],
             "year": [str(y) for y in range(1990, 2024)],
             "month": [f"{m:02d}" for m in range(1, 13)],
@@ -375,6 +479,7 @@ async def test_submit_gate_with_confirmed_bypasses(foundation, monkeypatch) -> N
     big_params = {
         "dataset_id": "reanalysis-era5-pressure-levels",
         "inputs": {
+            "product_type": ["reanalysis"],
             "variable": ["temperature"],
             "year": [str(y) for y in range(1990, 2024)],
             "month": [f"{m:02d}" for m in range(1, 13)],
@@ -404,6 +509,7 @@ async def test_submit_gate_below_threshold_no_confirmation_needed(foundation, mo
     tiny_params = {
         "dataset_id": "reanalysis-era5-single-levels",
         "inputs": {
+            "product_type": ["reanalysis"],
             "variable": ["2m_temperature"],
             "year": ["2024"],
             "month": ["01"],
@@ -419,6 +525,1223 @@ async def test_submit_gate_below_threshold_no_confirmation_needed(foundation, mo
     out = await backend.submit(tiny_params)
     assert out["request_id"] == "req-tiny"
     assert sdk.retrieve.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# T-CDS-EST2-002: pre-flight cost-limit rejection + nullable-size gate
+# ---------------------------------------------------------------------------
+
+
+def _patch_costing(monkeypatch, result) -> None:
+    async def _fake(*_a, **_k):
+        return result
+
+    monkeypatch.setattr("copernicus_mcp.backends.cds.backend.fetch_costing", _fake)
+
+
+def _whole_file_params() -> dict[str, object]:
+    """A whole-file product request — count_fields == 1."""
+    return {
+        "dataset_id": "satellite-carbon-dioxide",
+        "inputs": {
+            "processing_level": "level_3",
+            "variable": "xco2",
+            "sensor_and_algorithm": "merged_obs4mips",
+            "version": "4_5",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_submit_cost_over_limit_raises_validation_error_pre_sdk(
+    foundation, monkeypatch
+) -> None:
+    """WP3 case D: cost 1827 > limit 400 → structured ValidationError with a
+    year-split hint, raised before any cdsapi call."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+    from copernicus_mcp.errors.classes import ValidationError as CmcpValidationError
+
+    _patch_costing(monkeypatch, CostingResult(units=1827.0, limit=400.0))
+    fake_class, _ = _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote())
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    with pytest.raises(CmcpValidationError) as exc:
+        await backend.submit(_good_params())
+
+    fake_class.assert_not_called()
+    ctx = exc.value.error_record.context
+    assert ctx["cost_units"] == 1827.0
+    assert ctx["cost_limit"] == 400.0
+    assert ctx["suggested_split"]["chunks"] == 5  # ceil(1827/400)
+    assert ctx["suggested_split"]["dimension"] == "year"
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_proposal_precedes_size_confirmation(
+    foundation, monkeypatch
+) -> None:
+    """T-CDS-CHUNK-002 (model B): an over-limit *splittable* request that would
+    also trip the size gate yields the chunk PROPOSAL, not the generic size
+    ConfirmationRequired — the cost-limit branch still runs first (one
+    actionable round-trip)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    _patch_costing(monkeypatch, CostingResult(units=8000.0, limit=400.0))
+    _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote())
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    big_params = {
+        "dataset_id": "reanalysis-era5-pressure-levels",
+        "inputs": {
+            "product_type": ["reanalysis"],
+            "variable": ["temperature"],
+            "year": [str(y) for y in range(1990, 2024)],
+            "month": [f"{m:02d}" for m in range(1, 13)],
+            "day": [f"{d:02d}" for d in range(1, 32)],
+            "pressure_level": ["500", "850", "1000"],
+        },
+    }
+    with pytest.raises(ConfirmationRequired) as exc:
+        await backend.submit(big_params)
+    assert exc.value.payload["reason"] == "cost_limit_requires_chunking"
+
+
+@pytest.mark.asyncio
+async def test_submit_unknown_size_raises_confirmation_when_flag_on(
+    foundation, monkeypatch
+) -> None:
+    """With cds_confirm_on_unknown_size=True (opt-in; v2 default is False), an
+    unknown-size request raises confirmation 'estimated_size_unknown', no SDK call."""
+    import dataclasses
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    budget_on = foundation.config.budget.model_copy(
+        update={"cds_confirm_on_unknown_size": True}
+    )
+    config_on = foundation.config.model_copy(update={"budget": budget_on})
+    found_on = dataclasses.replace(foundation, config=config_on)
+
+    _patch_costing(monkeypatch, CostingResult(units=1.0, limit=10000.0))
+    fake_class, _ = _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote())
+    backend = CdsBackend(foundation=found_on, credentials=_fake_creds())
+
+    with pytest.raises(ConfirmationRequired) as exc:
+        await backend.submit(_whole_file_params())
+    fake_class.assert_not_called()
+    assert exc.value.payload["reason"] == "estimated_size_unknown"
+
+
+@pytest.mark.asyncio
+async def test_submit_unknown_size_flag_off_proceeds(foundation, monkeypatch) -> None:
+    """With cds_confirm_on_unknown_size=False, an unknown-size request submits
+    without a confirmation prompt."""
+    import dataclasses
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    budget_off = foundation.config.budget.model_copy(
+        update={"cds_confirm_on_unknown_size": False}
+    )
+    config_off = foundation.config.model_copy(update={"budget": budget_off})
+    found_off = dataclasses.replace(foundation, config=config_off)
+
+    _patch_costing(monkeypatch, CostingResult(units=1.0, limit=10000.0))
+    _, sdk = _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote("req-unknown"))
+    backend = CdsBackend(foundation=found_off, credentials=_fake_creds())
+
+    out = await backend.submit(_whole_file_params())
+    assert out["request_id"] == "req-unknown"
+    assert sdk.retrieve.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_costing_none_never_rejects_on_cost_limit(
+    foundation, monkeypatch
+) -> None:
+    """Costing unreachable (None) → no cost-limit rejection; submit proceeds
+    (the autouse default already returns None)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _, sdk = _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote("req-nocost"))
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    out = await backend.submit(_good_params())
+    assert out["request_id"] == "req-nocost"
+    assert sdk.retrieve.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# T-CDS-CHUNK-002: model-B auto-chunking (MCP proposes, agent disposes)
+# ---------------------------------------------------------------------------
+
+
+def _splittable_params() -> dict[str, Any]:
+    """A 5-year daily request (WP3 case D shape) — splittable along year."""
+    return {
+        "dataset_id": "derived-era5-single-levels-daily-statistics",
+        "inputs": {
+            "product_type": ["reanalysis"],
+            "variable": ["2m_temperature"],
+            "year": ["2020", "2021", "2022", "2023", "2024"],
+            "month": [f"{m:02d}" for m in range(1, 13)],
+            "day": [f"{d:02d}" for d in range(1, 32)],
+        },
+    }
+
+
+def _patch_costing_by_shape(monkeypatch, *, per_year: float, limit: float) -> None:
+    """``fetch_costing`` stub whose cost scales with the year count, so a
+    multi-year request exceeds ``limit`` while each single-year child fits
+    under it — the realistic chunk-then-validate path."""
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    async def _fake(dataset_id, inputs, **_kwargs):
+        years = inputs.get("year")
+        n_years = len(years) if isinstance(years, list) else 1
+        return CostingResult(units=per_year * n_years, limit=limit)
+
+    monkeypatch.setattr("copernicus_mcp.backends.cds.backend.fetch_costing", _fake)
+
+
+def _patch_cdsapi_seq(monkeypatch):
+    """Like ``_patch_cdsapi`` but ``retrieve`` returns a fresh Remote with a
+    unique request_id each call — chunk children must not collide on the PK."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("cdsapi")
+    instance = MagicMock()
+    counter = {"n": 0}
+
+    def _retrieve(name, request, target):
+        counter["n"] += 1
+        return _fake_remote(f"child-{counter['n']}")
+
+    instance.retrieve = MagicMock(side_effect=_retrieve)
+    inner = MagicMock()
+    poll_remote = MagicMock()
+    poll_remote.json = {"status": "running"}
+    inner.get_remote = MagicMock(return_value=poll_remote)
+    inner.delete = MagicMock(return_value={"deleted": True})
+    instance.client = inner
+    fake_class = MagicMock(return_value=instance)
+    fake_module.Client = fake_class  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cdsapi", fake_module)
+    return fake_class, instance
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_no_chunk_by_raises_proposal(
+    foundation, monkeypatch
+) -> None:
+    """Over-limit splittable request with no ``chunk_by`` → a chunk PROPOSAL
+    (ConfirmationRequired) carrying per-granularity viability, no cdsapi job."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    with pytest.raises(ConfirmationRequired) as exc:
+        await backend.submit(_splittable_params())
+
+    payload = exc.value.payload
+    assert payload["reason"] == "cost_limit_requires_chunking"
+    assert payload["chunked"] is True
+    ctx = payload["context"]
+    assert round(ctx["cost_units"]) == 1827
+    assert ctx["cost_limit"] == 400.0
+    gran = payload["chunking"]["granularities"]
+    assert gran["year"]["chunks"] == 5  # 5 whole-year chunks
+    assert gran["year"]["fits"] is True  # ~365/yr ≤ 400
+    assert payload["chunking"]["suggested_granularity"] == "year"
+    fake_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_chunk_by_year_submits_all_children(
+    foundation, monkeypatch
+) -> None:
+    """``chunk_by=year`` → parent row + ALL children submitted at once (v2: no
+    inflight throttle); the persisted plan records every child id."""
+    import json as _json
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+
+    assert out["chunked"] is True
+    assert out["chunk_count"] == 5
+    assert out["status"] == "queued"
+    parent_id = out["request_id"]
+    assert sdk.retrieve.call_count == 5  # all chunks submitted at once
+
+    parent = await foundation.persistence.fetch_workflow(parent_id)
+    assert parent is not None
+    assert parent["parent_request_id"] is None
+    plan = _json.loads(parent["chunk_plan_json"])
+    assert plan["granularity"] == "year"
+    assert plan["stopped"] is False
+    assert "max_inflight" not in plan
+    assert len(plan["chunks"]) == 5
+    submitted = [c for c in plan["chunks"] if c["child_request_id"] is not None]
+    assert len(submitted) == 5  # all
+    assert all(round(c["units"]) == 365 for c in plan["chunks"])
+
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    assert len(children) == 5
+    assert all(c["parent_request_id"] == parent_id for c in children)
+
+
+@pytest.mark.asyncio
+async def test_submit_resubmit_inflight_parent_dedupes_no_refanout(
+    foundation, monkeypatch
+) -> None:
+    """An identical re-submit while the chunked parent is still queued dedupes
+    to the SAME parent id and does NOT fan out a second set of children."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    first = await backend.submit(params)
+    assert sdk.retrieve.call_count == 5
+
+    again = await backend.submit(params)
+    assert again["request_id"] == first["request_id"]
+    assert again["chunked"] is True
+    assert again["chunk_count"] == 5
+    assert again["status"] == "queued"
+    assert sdk.retrieve.call_count == 5  # no re-fan-out
+    children = await foundation.persistence.list_child_workflows(first["request_id"])
+    assert len(children) == 5
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_confirmed_defaults_to_year(
+    foundation, monkeypatch
+) -> None:
+    """``confirmed=true`` with no ``chunk_by`` accepts the suggested granularity,
+    so a naive agent that just confirms still succeeds."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"confirmed": True}
+    out = await backend.submit(params)
+    assert out["chunked"] is True
+    assert out["chunk_count"] == 5
+    assert sdk.retrieve.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_auto_chunk_disabled_keeps_est2_error(
+    foundation, monkeypatch
+) -> None:
+    """Config ``cds_auto_chunk_enabled=False`` → unchanged EST2 manual-split
+    ValidationError, even when the agent supplies a ``chunk_by``."""
+    import dataclasses
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors.classes import ValidationError as CmcpValidationError
+
+    budget_off = foundation.config.budget.model_copy(
+        update={"cds_auto_chunk_enabled": False}
+    )
+    config_off = foundation.config.model_copy(update={"budget": budget_off})
+    found_off = dataclasses.replace(foundation, config=config_off)
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+    backend = CdsBackend(foundation=found_off, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(CmcpValidationError) as exc:
+        await backend.submit(params)
+    assert exc.value.error_record.context["cost_limit"] == 400.0
+    fake_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_opt_out_keeps_est2_error(
+    foundation, monkeypatch
+) -> None:
+    """Per-request ``__options.auto_chunk=false`` → unchanged EST2 error."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors.classes import ValidationError as CmcpValidationError
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_seq(monkeypatch)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"auto_chunk": False}
+    with pytest.raises(CmcpValidationError):
+        await backend.submit(params)
+
+
+@pytest.mark.asyncio
+async def test_submit_chunk_plan_too_many_chunks_maps_to_validation_error(
+    foundation, monkeypatch
+) -> None:
+    """A plan exceeding ``cds_auto_chunk_max_chunks`` → ChunkPlanError mapped to
+    a ValidationError advising a narrower request, no cdsapi job."""
+    import dataclasses
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors.classes import ValidationError as CmcpValidationError
+
+    budget_cap = foundation.config.budget.model_copy(
+        update={"cds_auto_chunk_max_chunks": 3}
+    )
+    config_cap = foundation.config.model_copy(update={"budget": budget_cap})
+    found_cap = dataclasses.replace(foundation, config=config_cap)
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+    backend = CdsBackend(foundation=found_cap, credentials=_fake_creds())
+
+    params = _splittable_params()  # year split → 5 chunks > cap 3
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(CmcpValidationError) as exc:
+        await backend.submit(params)
+    assert exc.value.error_record.context.get("chunk_plan_reason") == "too_many_chunks"
+    fake_class.assert_not_called()
+
+
+def _patch_cdsapi_retrieve_fails_first(monkeypatch, *, fail_times: int = 1):
+    """``retrieve`` raises for the first ``fail_times`` calls, then returns a
+    fresh unique Remote — drives the first-wave-failure cleanup path."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("cdsapi")
+    instance = MagicMock()
+    counter = {"n": 0}
+
+    def _retrieve(name, request, target):
+        counter["n"] += 1
+        if counter["n"] <= fail_times:
+            raise RuntimeError("CDS retrieve blew up")
+        return _fake_remote(f"child-{counter['n']}")
+
+    instance.retrieve = MagicMock(side_effect=_retrieve)
+    inner = MagicMock()
+    poll_remote = MagicMock()
+    poll_remote.json = {"status": "running"}
+    inner.get_remote = MagicMock(return_value=poll_remote)
+    inner.delete = MagicMock(return_value={"deleted": True})
+    instance.client = inner
+    fake_class = MagicMock(return_value=instance)
+    fake_module.Client = fake_class  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cdsapi", fake_module)
+    return fake_class, instance
+
+
+def _parent_cache_key(foundation, params: dict[str, Any]) -> str:
+    from copernicus_mcp.data_model.schemas_cds import CdsRetrieveRequest
+
+    clean = {k: v for k, v in params.items() if k != "__options"}
+    req = CdsRetrieveRequest.model_validate(clean)
+    return foundation.data_model.cache_key_for_cds_retrieve(req)
+
+
+@pytest.mark.asyncio
+async def test_submit_chunk_first_wave_failure_marks_parent_failed_no_poison(
+    foundation, monkeypatch
+) -> None:
+    """Codex Tier-A HIGH: a first-wave child failure must NOT leave the parent
+    stuck ``queued`` (which would poison the cache-key dedupe forever). The
+    parent goes ``failed`` with the plan stopped; a later retry (SDK healthy)
+    creates a fresh parent rather than re-using the dead one."""
+    import json as _json
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors import CopernicusMcpError
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_retrieve_fails_first(monkeypatch, fail_times=1)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(CopernicusMcpError):
+        await backend.submit(params)
+
+    cache_key = _parent_cache_key(foundation, params)
+    parent = await foundation.persistence.lookup_workflow_by_cache_key(cache_key)
+    assert parent is not None
+    assert parent["status"] == "failed"  # NOT queued — dedupe can't return it
+    plan = _json.loads(parent["chunk_plan_json"])
+    assert plan["stopped"] is True
+
+    # Retry now that the SDK is healthy → a brand-new parent, not the dead one.
+    again = await backend.submit(params)
+    assert again["chunked"] is True
+    assert again["request_id"] != parent["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_abort_marks_parent_failed_even_if_child_cancel_client_build_fails(
+    foundation, monkeypatch
+) -> None:
+    """Round-2 HIGH (both reviewers): the parent-failed write must NOT be gated
+    behind best-effort remote child cleanup. Child[0] submits, child[1] fails →
+    abort; the abort's child-cancel client build then raises — the parent must
+    STILL end ``failed`` (poison cured), not stuck ``queued``."""
+    import sys
+    import types
+
+    from copernicus_mcp.backends.cds import backend as backend_mod
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors import CopernicusMcpError
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+
+    # retrieve: child[0] OK, child[1] raises → abort with submitted=[child0].
+    fake_module = types.ModuleType("cdsapi")
+    instance = MagicMock()
+    rcounter = {"n": 0}
+
+    def _retrieve(name, request, target):
+        rcounter["n"] += 1
+        if rcounter["n"] == 2:
+            raise RuntimeError("second child retrieve failed")
+        return _fake_remote(f"child-{rcounter['n']}")
+
+    instance.retrieve = MagicMock(side_effect=_retrieve)
+    inner = MagicMock()
+    inner.delete = MagicMock(return_value={"deleted": True})
+    poll_remote = MagicMock()
+    poll_remote.json = {"status": "running"}
+    inner.get_remote = MagicMock(return_value=poll_remote)
+    instance.client = inner
+    fake_module.Client = MagicMock(return_value=instance)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cdsapi", fake_module)
+
+    # _make_cdsapi_client succeeds for the two child submits, raises on the 3rd
+    # construction (the abort's child-cancel client).
+    real_make = backend_mod._make_cdsapi_client
+    mcounter = {"n": 0}
+
+    def _make_or_fail(adapter, *, dataset_id=None):
+        mcounter["n"] += 1
+        if mcounter["n"] >= 3:
+            raise RuntimeError("client build failed during abort")
+        return real_make(adapter, dataset_id=dataset_id)
+
+    monkeypatch.setattr(backend_mod, "_make_cdsapi_client", _make_or_fail)
+
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(CopernicusMcpError):
+        await backend.submit(params)
+
+    cache_key = _parent_cache_key(foundation, params)
+    parent = await foundation.persistence.lookup_workflow_by_cache_key(cache_key)
+    assert parent is not None
+    assert parent["status"] == "failed"  # cured despite the abort client-build failure
+
+
+def _patch_cdsapi_children(
+    monkeypatch, status_by_request, *, download_bytes=b"GRIB-chunk", bytes_for=None
+):
+    """cdsapi mock for the chunked-parent lifecycle: ``retrieve`` assigns
+    sequential child ids; ``get_remote(id).json`` reflects ``status_by_request``
+    (a mutable dict the test mutates between polls); ``download_results`` writes a
+    file per child (``bytes_for(request_id)`` overrides ``download_bytes`` for the
+    heterogeneous-format case) so ``_finalise_successful`` succeeds."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("cdsapi")
+    instance = MagicMock()
+    counter = {"n": 0}
+
+    def _retrieve(name, request, target):
+        counter["n"] += 1
+        return _fake_remote(f"child-{counter['n']}")
+
+    instance.retrieve = MagicMock(side_effect=_retrieve)
+    inner = MagicMock()
+
+    def _get_remote(request_id):
+        rem = MagicMock()
+        rem.json = {"status": status_by_request.get(request_id, "running"), "jobID": request_id}
+        return rem
+
+    inner.get_remote = MagicMock(side_effect=_get_remote)
+    inner.delete = MagicMock(return_value={"deleted": True})
+
+    def _download_results(request_id, target):
+        payload = bytes_for(request_id) if bytes_for is not None else download_bytes
+        Path(target).write_bytes(payload)
+        return target
+
+    inner.download_results = MagicMock(side_effect=_download_results)
+    instance.client = inner
+    fake_class = MagicMock(return_value=instance)
+    fake_module.Client = fake_class  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cdsapi", fake_module)
+    return fake_class, instance
+
+
+async def _drive_parent_to_successful(backend, parent_id, status, n=5):
+    """Mark all ``n`` children successful and poll until the parent completes."""
+    for i in range(1, n + 1):
+        status[f"child-{i}"] = "successful"
+    st = None
+    for _ in range(n + 2):
+        st = await backend.check_status(parent_id)
+        if st["status"] == "successful":
+            break
+    return st
+
+
+@pytest.mark.asyncio
+async def test_fetch_result_parent_multifile_ordered(
+    foundation, monkeypatch, tmp_path: Path
+) -> None:
+    """A successful chunked parent returns an ordered descriptor SET (one file
+    per chunk), with span + a merge hint — the MCP never stitches."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+    await _drive_parent_to_successful(backend, parent_id, status)
+
+    res = await backend.fetch_result(parent_id, target=tmp_path / "ignored")
+    assert res["status"] == "successful"
+    assert res["chunked"] is True
+    assert res["chunk_count"] == 5
+    files = res["result"]["files"]
+    assert [f["chunk_index"] for f in files] == [0, 1, 2, 3, 4]  # ordered
+    assert all(f["filepath"] for f in files)
+    assert all("span" in f for f in files)
+    assert res["result"]["heterogeneous_formats"] is False
+    assert "merge_hint" in res["result"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_result_parent_flags_heterogeneous_formats(
+    foundation, monkeypatch, tmp_path: Path
+) -> None:
+    """Per the user requirement: when chunks come back in different formats (e.g.
+    CDS zips one), the MCP FLAGS it in metadata — it never normalizes."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    # child-1 comes back as a ZIP, the rest as GRIB.
+    def _bytes_for(rid: str) -> bytes:
+        return b"PK\x03\x04zip" if rid == "child-1" else b"GRIB-chunk"
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status, bytes_for=_bytes_for)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+    await _drive_parent_to_successful(backend, parent_id, status)
+
+    res = await backend.fetch_result(parent_id, target=tmp_path / "ignored")
+    assert res["result"]["heterogeneous_formats"] is True
+    assert len(res["result"]["formats"]) >= 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_result_parent_evicted_child_raises_cache_error(
+    foundation, monkeypatch, tmp_path: Path
+) -> None:
+    """An evicted child file → CacheError(cache_eviction) naming the chunk index,
+    not a partial/garbled set (decision 11b)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend, _cache_storage_key
+    from copernicus_mcp.errors import CacheError
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+    await _drive_parent_to_successful(backend, parent_id, status)
+
+    # Evict child-1's file by making lookup_file return None for its key.
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    evicted_key = _cache_storage_key(children[0]["cache_key"])
+    real_lookup = foundation.cache.lookup_file
+
+    async def _evicting_lookup(key):
+        return None if key == evicted_key else await real_lookup(key)
+
+    monkeypatch.setattr(foundation.cache, "lookup_file", _evicting_lookup)
+    with pytest.raises(CacheError) as exc:
+        await backend.fetch_result(parent_id, target=tmp_path / "ignored")
+    assert exc.value.error_record.error_subclass == "cache_eviction"
+
+
+@pytest.mark.asyncio
+async def test_fetch_result_parent_not_ready_lists_partial_files(
+    foundation, monkeypatch, tmp_path: Path
+) -> None:
+    """A non-successful parent → result_not_ready error carrying partial_files
+    (descriptors of any chunk already done, so work is never thrown away)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors import BackendError
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    # Finish only child-1, leave the parent running.
+    status["child-1"] = "successful"
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "running"
+
+    with pytest.raises(BackendError) as exc:
+        await backend.fetch_result(parent_id, target=tmp_path / "ignored")
+    assert exc.value.error_record.error_subclass == "result_not_ready"
+    partial = exc.value.error_record.context.get("partial_files")
+    assert partial and len(partial) >= 1
+
+
+@pytest.mark.asyncio
+async def test_check_status_parent_polls_children_not_parent_id(
+    foundation, monkeypatch
+) -> None:
+    """check_status on a chunked parent polls its SUBMITTED children but never
+    pokes CDS with the synthetic parent id; the response carries aggregate counts."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    sdk.client.get_remote.reset_mock()
+    st = await backend.check_status(parent_id)
+    assert st["chunked"] is True
+    assert st["status"] == "running"
+    assert st["chunks"]["total"] == 5
+    assert st["chunks"]["running"] == 5  # v2: all submitted at once
+    assert st["chunks"]["queued"] == 0
+    polled = {c.args[0] for c in sdk.client.get_remote.call_args_list}
+    assert polled == {f"child-{i}" for i in range(1, 6)}
+    assert parent_id not in polled
+
+
+@pytest.mark.asyncio
+async def test_check_status_parent_advances_to_successful(
+    foundation, monkeypatch
+) -> None:
+    """All chunks submit at once; once every child finalises, the parent reaches
+    successful (read-repaired)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+    assert sdk.retrieve.call_count == 5  # all chunks submitted at submit time
+
+    for i in range(1, 6):
+        status[f"child-{i}"] = "successful"
+    final = await backend.check_status(parent_id)
+    assert final["status"] == "successful"
+    assert final["chunks"]["successful"] == 5
+    assert sdk.retrieve.call_count == 5  # no extra submits
+    row = await foundation.persistence.fetch_workflow(parent_id)
+    assert row["status"] == "successful"  # read-repaired
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    assert len(children) == 5
+    assert all(c["status"] == "successful" for c in children)
+
+
+@pytest.mark.asyncio
+async def test_check_status_successful_parent_returns_files_directly(
+    foundation, monkeypatch
+) -> None:
+    """WP3 part-2: a successful chunked parent's check_status returns the full
+    multi-file descriptor set (paths + merge_hint) directly — the agent does NOT
+    need a second download call, since the files are already cached."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    st = await _drive_parent_to_successful(backend, parent_id, status)
+    assert st["status"] == "successful"
+    files = st["result"]["files"]
+    assert len(files) == 5
+    assert [f["chunk_index"] for f in files] == [0, 1, 2, 3, 4]
+    assert all(f["filepath"] for f in files)
+    assert "merge_hint" in st["result"]
+    # A re-check of the terminal parent also returns the files (no re-poll).
+    again = await backend.check_status(parent_id)
+    assert len(again["result"]["files"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_check_status_parent_child_failure_fails_parent(
+    foundation, monkeypatch
+) -> None:
+    """A child that fails terminally fails the parent (decision 4)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    status["child-1"] = "failed"
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "failed"
+    assert st["chunks"]["failed"] >= 1
+    row = await foundation.persistence.fetch_workflow(parent_id)
+    assert row["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_check_status_parent_failed_child_cancels_siblings(
+    foundation, monkeypatch
+) -> None:
+    """Codex CHUNK-003 HIGH: when a child fails, the in-flight siblings are
+    best-effort cancelled before the parent goes terminal (decision 4) — no
+    orphaned CDS job under a dead parent."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    status["child-1"] = "failed"  # child-2 still running
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "failed"
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    by_id = {c["request_id"]: c["status"] for c in children}
+    assert by_id["child-1"] == "failed"
+    assert by_id["child-2"] == "cancelled"  # in-flight sibling cancelled
+    assert sdk.client.delete.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_failed_parent_marks_siblings_cancelled_even_if_remote_delete_fails(
+    foundation, monkeypatch
+) -> None:
+    """Round-2: the LOCAL sibling-cancel runs first and unconditionally, so a
+    failing remote delete (or unbuildable client) still leaves the aggregate
+    consistent — the sibling row is cancelled regardless."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    sdk.client.delete.side_effect = RuntimeError("remote delete down")
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    status["child-1"] = "failed"
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "failed"
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    by_id = {c["request_id"]: c["status"] for c in children}
+    assert by_id["child-2"] == "cancelled"  # local-marked despite remote failure
+
+
+@pytest.mark.asyncio
+async def test_check_status_parent_dismissed_child_fails(
+    foundation, monkeypatch
+) -> None:
+    """Codex CHUNK-003 HIGH: a child CDS dismisses (→ canonical cancelled) without
+    a parent cancel fails the parent rather than running forever."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    status["child-1"] = "dismissed"  # CDS dismissed → canonical cancelled
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_submit_chunk_child_adopts_existing_no_duplicate(
+    foundation, monkeypatch
+) -> None:
+    """Codex CHUNK-003 HIGH: a chunk child durably submitted but lost from the
+    plan (interrupted persist) is ADOPTED by cache_key on the next attempt — no
+    duplicate CDS job — but only for the SAME parent."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    base = _splittable_params()["inputs"]
+    kwargs = dict(
+        dataset_id="derived-era5-single-levels-daily-statistics",
+        parent_inputs=base,
+        overrides={"year": ["2020"]},
+        units=365.0,
+        cost_limit=400.0,
+        parent_id="parent-x",
+    )
+    id1 = await backend._submit_chunk_child(**kwargs)
+    id2 = await backend._submit_chunk_child(**kwargs)  # same chunk + parent
+    assert id2 == id1  # adopted, not duplicated
+    assert sdk.retrieve.call_count == 1
+
+    # A different parent with the same chunk does NOT adopt — separate request.
+    id3 = await backend._submit_chunk_child(**{**kwargs, "parent_id": "parent-y"})
+    assert id3 != id1
+    assert sdk.retrieve.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_submit_chunk_child_adopts_own_orphan_not_shadowed(
+    foundation, monkeypatch
+) -> None:
+    """Codex CHUNK-003 r5 HIGH: a same-chunk child of ANOTHER parent (a newer row
+    for the same cache_key) must NOT shadow this parent's own orphan — the adopt
+    lookup is scoped to the parent's own children, not the global newest."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    base = _splittable_params()["inputs"]
+    kwargs = dict(
+        dataset_id="derived-era5-single-levels-daily-statistics",
+        parent_inputs=base,
+        overrides={"year": ["2020"]},
+        units=365.0,
+        cost_limit=400.0,
+    )
+    id_x = await backend._submit_chunk_child(**kwargs, parent_id="parent-x")
+    # parent-y then submits the SAME chunk — a NEWER row for the same cache_key.
+    id_y = await backend._submit_chunk_child(**kwargs, parent_id="parent-y")
+    assert id_y != id_x
+    assert sdk.retrieve.call_count == 2
+
+    # parent-x re-attempts (its plan lost the id) → adopts ITS OWN child, not the
+    # newer parent-y child that shares the cache_key.
+    id_x2 = await backend._submit_chunk_child(**kwargs, parent_id="parent-x")
+    assert id_x2 == id_x
+    assert sdk.retrieve.call_count == 2  # no duplicate
+
+
+@pytest.mark.asyncio
+async def test_check_status_terminal_failed_parent_recovers_orphan_children(
+    foundation, monkeypatch
+) -> None:
+    """Round-3 (codex): if a previous advance was interrupted mid-cleanup leaving
+    a terminal parent with stray in-flight children, the next poll RE-CLEANS them
+    (poll-driven recovery), rather than leaking them forever behind the terminal
+    short-circuit."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    # Simulate an interrupted cleanup: parent terminal failed, children still running.
+    await foundation.persistence.update_workflow_status(parent_id, "failed")
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "failed"
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    assert all(c["status"] == "cancelled" for c in children)  # orphans recovered
+
+
+@pytest.mark.asyncio
+async def test_submit_over_limit_dirty_calendar_token_not_chunked(
+    foundation, monkeypatch
+) -> None:
+    """Codex Tier-A MEDIUM (invariant 2): a credential-shaped value on a split
+    axis must not engage the chunk path — it falls back to the EST2 manual-split
+    ValidationError, so the value never reaches a persisted chunk plan."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.errors.classes import ValidationError as CmcpValidationError
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+
+    params = _splittable_params()
+    params["inputs"]["year"] = [
+        "2020",
+        "abcdef01-2345-6789-abcd-ef0123456789",  # credential-shaped
+        "2022",
+        "2023",
+        "2024",
+    ]
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(CmcpValidationError) as exc:
+        await backend.submit(params)
+    assert exc.value.error_record.context.get("cost_limit") == 400.0
+    fake_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_terminal_successful_parent_rebuilds_no_refanout(
+    foundation, monkeypatch, tmp_path: Path
+) -> None:
+    """Decision 11a: re-submitting an already-complete chunked parent rebuilds
+    the multi-file result from the child cache — same parent id, zero new CDS
+    jobs (no duplicate fan-out)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+    await _drive_parent_to_successful(backend, parent_id, status)
+    retrieve_before = sdk.retrieve.call_count  # 5 children
+
+    again = await backend.submit(_splittable_params())
+    assert again["status"] == "successful"
+    assert again["chunked"] is True
+    assert again["request_id"] == parent_id
+    assert len(again["result"]["files"]) == 5
+    assert sdk.retrieve.call_count == retrieve_before  # no new fan-out
+
+
+@pytest.mark.asyncio
+async def test_cancel_parent_cascades(foundation, monkeypatch) -> None:
+    """cancel(parent) stops the plan, best-effort cancels in-flight children, and
+    marks the parent cancelled; a later poll never submits more (decision 8)."""
+    import json as _json
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    res = await backend.cancel(parent_id)
+    assert res["cancelled"] is True
+    assert res["status"] == "cancelled"
+
+    row = await foundation.persistence.fetch_workflow(parent_id)
+    assert row["status"] == "cancelled"
+    plan = _json.loads(row["chunk_plan_json"])
+    assert plan["stopped"] is True
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    assert len(children) == 5  # all submitted at once (v2)
+    assert all(c["status"] == "cancelled" for c in children)
+    assert sdk.client.delete.call_count >= 5  # remote delete attempted per child
+
+    submits_after_cancel = sdk.retrieve.call_count
+    st = await backend.check_status(parent_id)
+    assert st["status"] == "cancelled"
+    assert sdk.retrieve.call_count == submits_after_cancel  # no submits after cancel
+
+
+@pytest.mark.asyncio
+async def test_cancel_parent_preserves_successful_child(foundation, monkeypatch) -> None:
+    """A child already successful when the parent is cancelled keeps its terminal
+    state + cached file; only the in-flight children are cancelled (decision 8)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    status: dict[str, str] = {}
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _patch_cdsapi_children(monkeypatch, status)
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    out = await backend.submit(params)
+    parent_id = out["request_id"]
+
+    status["child-1"] = "successful"
+    await backend.check_status(parent_id)  # finalise child-1, refill child-3
+
+    res = await backend.cancel(parent_id)
+    assert res["status"] == "cancelled"
+    children = await foundation.persistence.list_child_workflows(parent_id)
+    by_id = {c["request_id"]: c["status"] for c in children}
+    assert by_id["child-1"] == "successful"  # preserved
+    assert all(s == "cancelled" for cid, s in by_id.items() if cid != "child-1")
+
+
+@pytest.mark.asyncio
+async def test_cancel_pops_inflight_cost_when_it_wins(foundation, monkeypatch) -> None:
+    """A cancel that actually transitions the row drops the pre-flight cost
+    (no download will follow, so no observation needs it)."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote())
+    await _seed_workflow_row(foundation, request_id="rid-cancel", status="running")
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    backend._inflight_costing["rid-cancel"] = {"units": 24.0, "limit": 400.0}
+
+    out = await backend.cancel("rid-cancel")
+    assert out["status"] == "cancelled"
+    assert "rid-cancel" not in backend._inflight_costing
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_inflight_cost_when_it_loses_race(
+    foundation, monkeypatch
+) -> None:
+    """If cancel loses the terminal-state race to a successful finalize, it must
+    NOT strip the cost — the in-flight finalizer still needs it to record the
+    calibration observation (codex Tier-A MEDIUM)."""
+    from unittest.mock import AsyncMock
+
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    _patch_cdsapi(monkeypatch, retrieve_returns=_fake_remote())
+    await _seed_workflow_row(foundation, request_id="rid-lose", status="running")
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    backend._inflight_costing["rid-lose"] = {"units": 24.0, "limit": 400.0}
+
+    # Simulate the finalizer winning: the conditional update does not commit.
+    monkeypatch.setattr(
+        foundation.persistence,
+        "update_workflow_status_if_pending",
+        AsyncMock(return_value=False),
+    )
+    await backend.cancel("rid-lose")
+    assert backend._inflight_costing["rid-lose"] == {"units": 24.0, "limit": 400.0}
+
+
+@pytest.mark.asyncio
+async def test_successful_download_writes_size_observation(foundation, monkeypatch) -> None:
+    """T-CDS-EST2-003: submit→poll→success captures one size_observations
+    row with the downloaded byte size and the pre-flight cost units."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    _patch_costing(monkeypatch, CostingResult(units=24.0, limit=121000.0))
+    _patch_cdsapi(
+        monkeypatch,
+        retrieve_returns=_fake_remote("req-obs"),
+        get_remote_json={"status": "successful"},
+    )
+    backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    await backend.submit(_good_params())
+    out = await backend.check_status("req-obs")
+
+    assert out["status"] == "successful"
+    rows = await foundation.persistence.list_size_observations(
+        "cds", "reanalysis-era5-single-levels", None
+    )
+    assert len(rows) == 1
+    assert rows[0]["cost_units"] == 24.0
+    assert rows[0]["size_bytes"] == len(_CDS_DEFAULT_DOWNLOAD_BYTES)
+    assert rows[0]["signature"]  # non-empty signature string
+    assert rows[0]["request_id"] == "req-obs"
+
+
+@pytest.mark.asyncio
+async def test_restart_shaped_success_writes_null_cost_observation(
+    foundation, monkeypatch
+) -> None:
+    """If the in-memory costing is gone (process restart / FIFO eviction) when
+    the download finalises, the observation is still written with NULL cost."""
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+    from copernicus_mcp.backends.cds.costing import CostingResult
+
+    _patch_costing(monkeypatch, CostingResult(units=24.0, limit=121000.0))
+    _patch_cdsapi(
+        monkeypatch,
+        retrieve_returns=_fake_remote("req-restart"),
+        get_remote_json={"status": "successful"},
+    )
+    submit_backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    await submit_backend.submit(_good_params())
+
+    # Fresh backend instance = empty _inflight_costing (simulates restart).
+    poll_backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    out = await poll_backend.check_status("req-restart")
+
+    assert out["status"] == "successful"
+    rows = await foundation.persistence.list_size_observations(
+        "cds", "reanalysis-era5-single-levels", None
+    )
+    assert len(rows) == 1
+    assert rows[0]["cost_units"] is None
+    assert rows[0]["size_bytes"] == len(_CDS_DEFAULT_DOWNLOAD_BYTES)
 
 
 @pytest.mark.asyncio
@@ -1037,11 +2360,12 @@ async def test_finalise_marks_failed_when_sniff_rename_raises(
 
     monkeypatch.setattr(Path, "replace", _boom)
 
-    from copernicus_mcp.errors import CopernicusMcpError
-
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
-    with pytest.raises(CopernicusMcpError):
-        await backend.check_status("rid-rename-fail")
+    # T-CDS-ASYNC-DOWNLOAD: the backgrounded download/sniff failure settles the row
+    # to ``failed`` and surfaces as a failed envelope (within the inline grace), not
+    # raised from check_status.
+    out = await backend.check_status("rid-rename-fail")
+    assert out["status"] == "failed"
 
     row = await foundation.persistence.fetch_workflow("rid-rename-fail")
     assert row is not None
@@ -1364,6 +2688,7 @@ async def test_user_supplied_uuid_under_inputs_jobid_is_redacted(
     params = {
         "dataset_id": "reanalysis-era5-single-levels",
         "inputs": {
+            "product_type": ["reanalysis"],
             "variable": ["2m_temperature"],
             "year": ["2024"], "month": ["01"], "day": ["01"],
             "time": ["00:00"],
@@ -1590,10 +2915,13 @@ async def test_check_status_does_not_mark_old_running_as_failed(foundation, monk
 
 @pytest.mark.asyncio
 async def test_check_status_concurrent_finalise_downloads_once(foundation, monkeypatch) -> None:
-    """Codex spec review HIGH-2: two simultaneous ``check_status`` calls
-    on the same successful job must download exactly once. The second
-    caller observes the already-finalised row and returns the same
-    descriptor."""
+    """Two simultaneous ``check_status`` calls on the same successful job must
+    download EXACTLY once (review HIGH: the registry mutex serialises the spawn
+    decision across the terminal-row recheck). With backgrounding, one caller may
+    observe the download still in flight (running / phase downloading) while the
+    other sees it finished — but only one download fires, then both settle."""
+    import contextlib as _ctx
+
     from copernicus_mcp.backends.cds.backend import CdsBackend
 
     cache_key = "ck-concurrent"
@@ -1602,9 +2930,16 @@ async def test_check_status_concurrent_finalise_downloads_once(foundation, monke
 
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
     a, b = await asyncio.gather(backend.check_status("rid-c"), backend.check_status("rid-c"))
-    assert a["status"] == "successful"
-    assert b["status"] == "successful"
-    # Download must have happened exactly once.
+    # Each caller is either already-successful or still-downloading — never an error.
+    assert {a["status"], b["status"]} <= {"successful", "running"}
+    # The critical invariant: the file downloaded exactly once (no double-spawn).
+    assert sdk.client.download_results.call_count == 1
+    # Drain any in-flight background download, then a poll settles to successful.
+    for t in list(backend._downloads.values()):
+        with _ctx.suppress(Exception):
+            await t
+    final = await backend.check_status("rid-c")
+    assert final["status"] == "successful"
     assert sdk.client.download_results.call_count == 1
 
 
@@ -1663,15 +2998,16 @@ async def test_check_status_download_failure_persists_failed(foundation, monkeyp
     row settles to ``failed`` with sanitised error details — never
     leaves a half-finalised row in ``running``."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
-    from copernicus_mcp.errors import BackendError
 
     await _seed_workflow_row(foundation, request_id="rid-dl", cache_key="ck-dl", status="running")
     _, sdk = _patch_cdsapi(monkeypatch, get_remote_json={"status": "successful"})
     sdk.client.download_results = MagicMock(side_effect=RuntimeError("transient socket reset"))
 
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
-    with pytest.raises(BackendError):
-        await backend.check_status("rid-dl")
+    # T-CDS-ASYNC-DOWNLOAD: a backgrounded download failure settles the row to
+    # ``failed`` and surfaces as a failed envelope (within the inline grace).
+    out = await backend.check_status("rid-dl")
+    assert out["status"] == "failed"
     row = await foundation.persistence.fetch_workflow("rid-dl")
     assert row is not None and row["status"] == "failed"
 
@@ -2539,7 +3875,6 @@ async def test_check_status_store_file_failure_reverts_row_to_failed(
     re-fetch.
     """
     from copernicus_mcp.backends.cds.backend import CdsBackend
-    from copernicus_mcp.errors import BackendError
 
     cache_key = "ck-store-fail"
     await _seed_workflow_row(
@@ -2554,8 +3889,10 @@ async def test_check_status_store_file_failure_reverts_row_to_failed(
     monkeypatch.setattr(foundation.cache, "store_file", _broken_store_file)
 
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
-    with pytest.raises(BackendError):
-        await backend.check_status("rid-sf")
+    # T-CDS-ASYNC-DOWNLOAD: surfaced as a failed envelope (within the inline grace),
+    # not raised — the row must still settle to ``failed``.
+    out = await backend.check_status("rid-sf")
+    assert out["status"] == "failed"
 
     # Row must NOT be stuck at successful.
     row = await foundation.persistence.fetch_workflow("rid-sf")
@@ -2636,3 +3973,343 @@ async def test_submit_orphan_cleanup_survives_outer_task_cancellation(
         await asyncio.sleep(0.01)
 
     sdk.client.delete.assert_called_once_with("orphan-y")
+
+
+# ---------------------------------------------------------------------------
+# T-CDS-CHUNK fan-out confirmation tiers: confirm > N, repeat-confirm > M
+# ---------------------------------------------------------------------------
+
+
+def _make_foundation_low_fanout(tmp_path: Path):
+    """Foundation with low auto-chunk fan-out thresholds (confirm>2, reconfirm>4)
+    so a 5-chunk split exercises both confirmation tiers without 100+ children."""
+    from copernicus_mcp.auth import CredentialResolver
+    from copernicus_mcp.backends.abstract import FoundationServices
+    from copernicus_mcp.cache import CacheManager
+    from copernicus_mcp.config import ConfigLoader
+    from copernicus_mcp.data_model.coordinator import DataModelCoordinator
+    from copernicus_mcp.data_model.provenance import ProvenanceRecorder
+    from copernicus_mcp.errors.sanitiser import Sanitiser
+    from copernicus_mcp.http import HttpClientFactory
+    from copernicus_mcp.persistence import SqliteBackend
+
+    config = ConfigLoader().load(
+        cli_overrides={
+            "budget": {
+                "cds_auto_chunk_confirm_above": 2,
+                "cds_auto_chunk_reconfirm_above": 4,
+            }
+        }
+    )
+    persistence = SqliteBackend(tmp_path / "state.db")
+    cache = CacheManager(
+        cache_directory=tmp_path / "cache",
+        persistence=persistence,
+        size_limit_bytes=10 * 1024 * 1024,
+    )
+    foundation = FoundationServices(
+        config=config,
+        credential_resolver=CredentialResolver(),
+        http_client_factory=HttpClientFactory(http_config=config.http),
+        persistence=persistence,
+        cache=cache,
+        sanitiser=Sanitiser(),
+        data_model=DataModelCoordinator(persistence=persistence),
+        provenance=ProvenanceRecorder(
+            persistence=persistence,
+            software_versions={"copernicus-mcp": "0.0.1"},
+        ),
+    )
+    return foundation, persistence
+
+
+@pytest_asyncio.fixture
+async def low_fanout_backend(tmp_path: Path):
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    foundation, persistence = _make_foundation_low_fanout(tmp_path)
+    await persistence.initialise()
+    try:
+        yield CdsBackend(foundation=foundation, credentials=_fake_creds())
+    finally:
+        await persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_fanout_over_confirm_threshold_requires_confirmation(
+    low_fanout_backend, monkeypatch
+) -> None:
+    """A 5-chunk plan (> confirm_above=2), not confirmed → ConfirmationRequired
+    carrying the job count; no cdsapi job is created."""
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year"}
+    with pytest.raises(ConfirmationRequired) as exc:
+        await low_fanout_backend.submit(params)
+
+    payload = exc.value.payload
+    assert payload["reason"] == "auto_chunk_job_count"
+    assert payload["chunk_count"] == 5
+    assert payload["context"]["confirm_threshold"] == 2
+    fake_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fanout_confirmed_below_reconfirm_still_reconfirms(
+    low_fanout_backend, monkeypatch
+) -> None:
+    """confirmed=true clears the first tier, but 5 chunks (> reconfirm_above=4)
+    demands the SECOND, deliberate ack — confirmed alone is not enough."""
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year", "confirmed": True}
+    with pytest.raises(ConfirmationRequired) as exc:
+        await low_fanout_backend.submit(params)
+
+    payload = exc.value.payload
+    assert payload["reason"] == "auto_chunk_job_count_large"
+    assert payload["chunk_count"] == 5
+    assert payload["context"]["confirm_threshold"] == 4
+    fake_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fanout_both_acks_submits_all_children(
+    low_fanout_backend, monkeypatch
+) -> None:
+    """confirmed=true AND confirm_large_fanout=true → both tiers cleared, every
+    child submitted."""
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+
+    params = _splittable_params()
+    params["__options"] = {
+        "chunk_by": "year",
+        "confirmed": True,
+        "confirm_large_fanout": True,
+    }
+    out = await low_fanout_backend.submit(params)
+    assert out["chunked"] is True
+    assert out["chunk_count"] == 5
+    assert sdk.retrieve.call_count == 5
+
+
+@pytest.mark.asyncio
+async def test_fanout_at_threshold_does_not_gate(low_fanout_backend, monkeypatch) -> None:
+    """Boundary: the gates are strict ``>``, so n == confirm_above (=2) does not
+    gate — a 2-chunk split submits directly."""
+    _patch_costing_by_shape(monkeypatch, per_year=300.0, limit=400.0)
+    _, sdk = _patch_cdsapi_children(monkeypatch, {})
+
+    params = {
+        "dataset_id": "derived-era5-single-levels-daily-statistics",
+        "inputs": {
+            "product_type": ["reanalysis"],
+            "variable": ["2m_temperature"],
+            "year": ["2020", "2021"],
+            "month": [f"{m:02d}" for m in range(1, 13)],
+            "day": [f"{d:02d}" for d in range(1, 32)],
+        },
+        "__options": {"chunk_by": "year"},
+    }
+    out = await low_fanout_backend.submit(params)
+    assert out["chunked"] is True
+    assert out["chunk_count"] == 2
+    assert sdk.retrieve.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fanout_large_ack_alone_does_not_skip_tier1(
+    low_fanout_backend, monkeypatch
+) -> None:
+    """confirm_large_fanout WITHOUT confirmed cannot skip tier 1: a 5-chunk plan
+    still raises the first-tier confirmation (tier 1 keys only on confirmed)."""
+    from copernicus_mcp.workflow.confirmation import ConfirmationRequired
+
+    _patch_costing_by_shape(monkeypatch, per_year=365.4, limit=400.0)
+    fake_class, _ = _patch_cdsapi_seq(monkeypatch)
+
+    params = _splittable_params()
+    params["__options"] = {"chunk_by": "year", "confirm_large_fanout": True}
+    with pytest.raises(ConfirmationRequired) as exc:
+        await low_fanout_backend.submit(params)
+    assert exc.value.payload["reason"] == "auto_chunk_job_count"
+    fake_class.assert_not_called()
+
+
+def test_chunk_parent_response_includes_progress() -> None:
+    """T-DOWNLOAD-PROGRESS: the chunked-parent status carries an explicit
+    completed/total progress block (download position) over the per-state counts."""
+    from copernicus_mcp.backends.cds.backend import _chunk_parent_response
+
+    plan = {"chunks": [{"index": i, "child_request_id": f"c{i}"} for i in range(5)]}
+    child_status = {"c0": "successful", "c1": "successful", "c2": "running", "c3": "running"}
+    resp = _chunk_parent_response(
+        parent_id="p",
+        cache_key="k",
+        plan=plan,
+        child_status=child_status,
+        status="running",
+    )
+    assert resp["progress"] == {"completed": 2, "total": 5}
+    assert resp["chunks"]["successful"] == 2
+
+
+# ---------------------------------------------------------------------------
+# T-CDS-ASYNC-DOWNLOAD: the file fetch is backgrounded so check_status does not
+# block the agent on the transfer.
+# ---------------------------------------------------------------------------
+
+
+def _make_foundation_grace(tmp_path: Path, grace: float):
+    """Foundation with a tiny download inline-grace so a gated download reliably
+    exceeds it and backgrounds."""
+    from copernicus_mcp.auth import CredentialResolver
+    from copernicus_mcp.backends.abstract import FoundationServices
+    from copernicus_mcp.cache import CacheManager
+    from copernicus_mcp.config import ConfigLoader
+    from copernicus_mcp.data_model.coordinator import DataModelCoordinator
+    from copernicus_mcp.data_model.provenance import ProvenanceRecorder
+    from copernicus_mcp.errors.sanitiser import Sanitiser
+    from copernicus_mcp.http import HttpClientFactory
+    from copernicus_mcp.persistence import SqliteBackend
+
+    config = ConfigLoader().load(
+        cli_overrides={"budget": {"cds_download_inline_grace_seconds": grace}}
+    )
+    persistence = SqliteBackend(tmp_path / "state.db")
+    cache = CacheManager(
+        cache_directory=tmp_path / "cache",
+        persistence=persistence,
+        size_limit_bytes=10 * 1024 * 1024,
+    )
+    foundation = FoundationServices(
+        config=config,
+        credential_resolver=CredentialResolver(),
+        http_client_factory=HttpClientFactory(http_config=config.http),
+        persistence=persistence,
+        cache=cache,
+        sanitiser=Sanitiser(),
+        data_model=DataModelCoordinator(persistence=persistence),
+        provenance=ProvenanceRecorder(
+            persistence=persistence,
+            software_versions={"copernicus-mcp": "0.0.1"},
+        ),
+    )
+    return foundation, persistence
+
+
+@pytest_asyncio.fixture
+async def grace_backend(tmp_path: Path):
+    from copernicus_mcp.backends.cds.backend import CdsBackend
+
+    foundation, persistence = _make_foundation_grace(tmp_path, grace=0.05)
+    await persistence.initialise()
+    try:
+        yield CdsBackend(foundation=foundation, credentials=_fake_creds())
+    finally:
+        await persistence.close()
+
+
+def _gated_download(gate, calls=None):
+    """A ``download_results`` stub that blocks on ``gate`` until the test releases
+    it (so the download outlasts the inline grace), then writes the file."""
+
+    def _dl(request_id, target):
+        if calls is not None:
+            calls["n"] += 1
+        gate.wait(timeout=5)
+        Path(target).write_bytes(b"grib-bytes")
+        return target
+
+    return _dl
+
+
+@pytest.mark.asyncio
+async def test_check_status_backgrounds_slow_download(grace_backend, monkeypatch) -> None:
+    """A download slower than the inline grace is backgrounded: check_status returns
+    immediately (status running / phase downloading) instead of blocking on the
+    transfer; a later poll returns successful. No double-spawn."""
+    import threading
+
+    backend = grace_backend
+    await _seed_workflow_row(
+        backend.foundation, request_id="rid-bg", cache_key="ck-bg", status="running"
+    )
+    gate = threading.Event()
+    calls = {"n": 0}
+    _, sdk = _patch_cdsapi(monkeypatch, get_remote_json={"status": "successful"})
+    sdk.client.download_results = MagicMock(side_effect=_gated_download(gate, calls))
+
+    out1 = await backend.check_status("rid-bg")
+    assert out1["status"] == "running"
+    assert out1["phase"] == "downloading"
+    task = backend._downloads.get("rid-bg")
+    assert task is not None and not task.done()
+
+    # A second poll while still downloading → still downloading, not re-spawned.
+    out_mid = await backend.check_status("rid-bg")
+    assert out_mid.get("phase") == "downloading"
+    assert calls["n"] == 1
+
+    gate.set()
+    await task
+
+    out2 = await backend.check_status("rid-bg")
+    assert out2["status"] == "successful"
+    assert "filepath" in out2["result"]
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_cancels_inflight_download(grace_backend, monkeypatch) -> None:
+    """A cancel during a backgrounded download removes the in-flight task and
+    settles the row to cancelled (best-effort, gotcha #8)."""
+    import contextlib as _ctx
+    import threading
+
+    backend = grace_backend
+    await _seed_workflow_row(
+        backend.foundation, request_id="rid-cx", cache_key="ck-cx", status="running"
+    )
+    gate = threading.Event()
+    _, sdk = _patch_cdsapi(monkeypatch, get_remote_json={"status": "successful"})
+    sdk.client.download_results = MagicMock(side_effect=_gated_download(gate))
+
+    out1 = await backend.check_status("rid-cx")
+    assert out1["phase"] == "downloading"
+    task = backend._downloads.get("rid-cx")
+    assert task is not None and not task.done()
+
+    await backend.cancel("rid-cx")
+    assert "rid-cx" not in backend._downloads
+    row = await backend.foundation.persistence.fetch_workflow("rid-cx")
+    assert row is not None and row["status"] == "cancelled"
+
+    # Regression (review HIGH): a poll after cancel must NOT re-spawn the download —
+    # cancel commits ``cancelled`` first, so check_status short-circuits the terminal
+    # row instead of starting a second concurrent transfer.
+    out2 = await backend.check_status("rid-cx")
+    assert out2["status"] == "cancelled"
+    assert sdk.client.download_results.call_count == 1
+
+    # Release the worker thread + drain the cancelled task (best-effort cleanup).
+    gate.set()
+    with _ctx.suppress(asyncio.CancelledError, Exception):
+        await task
+    # Review MEDIUM: the cancelled download's staging dir is cleaned — no leaked file.
+    staging_root = backend.foundation.cache.cache_zone_for("cds") / ".staging"
+    leftover_files = (
+        [p for p in staging_root.rglob("*") if p.is_file()]
+        if staging_root.exists()
+        else []
+    )
+    assert leftover_files == [], leftover_files
