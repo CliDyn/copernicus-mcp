@@ -131,6 +131,10 @@ class CostConsumed(BaseModel):
 
     type: str
     advisory_message: str | None = None
+    # T-CDS-EST2-003: CDS ``/costing`` units + the dataset's per-request limit,
+    # recorded when a costing pre-flight was available for the retrieval.
+    cost_units: float | None = None
+    cost_limit: float | None = None
 
 
 class CacheRef(BaseModel):

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from platformdirs import user_cache_dir, user_state_dir
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Base(BaseModel):
@@ -91,6 +91,65 @@ class BudgetPolicy(_Base):
     # of bytes). ``cds_confirm_on_queue_tier`` is the second guard rail.
     cds_per_request_size_warning_gb: float = 1.0
     cds_confirm_on_queue_tier: tuple[str, ...] = ("medium", "heavy")
+    # T-CDS v2: byte size is now honestly "unknown" for any uncalibrated request
+    # (not just whole-file products), so confirming on every unknown size would
+    # prompt on most first-time submits. The byte-heavy / dangerous requests are
+    # already gated by the queue-tier (medium/heavy) and cost-limit checks, so we
+    # do NOT additionally block on unknown size by default. Set True to re-add a
+    # confirmation whenever the byte size cannot be estimated.
+    cds_confirm_on_unknown_size: bool = False
+    # T-CDS-CHUNK (model B): when a CDS request exceeds the dataset's
+    # server-side cost limit, the backend splits it into whole calendar units
+    # (year/month/day) and submits ALL parts at once as one logical multi-file
+    # workflow. The agent picks the granularity (``__options.chunk_by``); the MCP
+    # proposes and validates. CDS's per-user concurrent limit is undocumented and
+    # exceeding it only QUEUES the excess (it does not reject), so we submit
+    # everything and let CDS schedule — there is no inflight throttle. Instead,
+    # three fan-out guards (a large split is many jobs launched at once):
+    #   - ``confirm_above``: a plan with > N chunks raises a ConfirmationRequired
+    #     the agent satisfies with ``confirmed=true`` — putting a human in the loop.
+    #   - ``reconfirm_above``: > N chunks demands a SECOND, deliberate confirmation
+    #     — ``confirmed`` alone is not enough; the agent must ALSO pass
+    #     ``__options.confirm_large_fanout=true``. This is the "repeat" gate that a
+    #     glitched agent blanket-setting ``confirmed`` cannot slip a runaway through.
+    #   - ``max_chunks``: hard ceiling — over it the request is rejected outright
+    #     (no confirm bypasses it), with a "use a coarser granularity" hint.
+    # Constraints: 0 ≤ confirm_above ≤ reconfirm_above, and max_chunks ≥ 1.
+    # ``max_chunks`` is INDEPENDENT — a low hard cap below the soft thresholds is a
+    # valid, more conservative config (it hard-rejects a big split rather than
+    # re-confirming it).
+    cds_auto_chunk_enabled: bool = True
+    cds_auto_chunk_confirm_above: int = 30
+    cds_auto_chunk_reconfirm_above: int = 100
+    cds_auto_chunk_max_chunks: int = 366
+    # T-CDS-ASYNC-DOWNLOAD: check_status spawns the result-file download and waits
+    # at most this long for it inline. A fast / small file completes in one poll;
+    # a large one exceeds the grace and finishes in the BACKGROUND (the poll
+    # returns status "running", phase "downloading") so the agent is not blocked on
+    # the transfer. ``asyncio.wait`` returns the instant the download finishes, so
+    # this adds no delay to a quick download — it is only an upper bound. 0 =
+    # always background.
+    cds_download_inline_grace_seconds: float = Field(default=2.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _check_fanout_thresholds(self) -> BudgetPolicy:
+        """Sanity-check the auto-chunk fan-out thresholds: non-negative and ordered
+        (confirm <= reconfirm). ``max_chunks`` is an INDEPENDENT hard cap and may
+        sit below the soft thresholds — a low ceiling just hard-rejects a big split
+        (stricter than the confirms, never a bypass), a valid conservative config;
+        only require it >= 1."""
+        if not (
+            0 <= self.cds_auto_chunk_confirm_above <= self.cds_auto_chunk_reconfirm_above
+            and self.cds_auto_chunk_max_chunks >= 1
+        ):
+            raise ValueError(
+                "auto-chunk fan-out thresholds must satisfy 0 <= confirm_above <= "
+                "reconfirm_above and max_chunks >= 1; got "
+                f"confirm_above={self.cds_auto_chunk_confirm_above}, "
+                f"reconfirm_above={self.cds_auto_chunk_reconfirm_above}, "
+                f"max_chunks={self.cds_auto_chunk_max_chunks}"
+            )
+        return self
 
 
 class ObservabilityConfig(_Base):

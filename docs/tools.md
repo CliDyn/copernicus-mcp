@@ -2,7 +2,7 @@
 
 `copernicus-mcp` registers a diagnostic plus per-backend tool surfaces:
 
-- **Diagnostic** (always registered): `copernicus_mcp_status`.
+- **Diagnostic** (always registered): `copernicus_mcp_status`, `copernicus_mcp_list_jobs`.
 - **CMEMS** (eleven tools, registered when the `cmems` backend is enabled): `marine_search_groups`, `marine_search_products`, `marine_search_datasets`, `marine_describe_dataset`, `marine_get_coordinates`, `marine_estimate_subset`, `marine_subset_dataset`, `marine_list_files`, `marine_get_files`, `marine_check_status`, `marine_cancel_subset`. The first three implement the three-step hierarchical pipeline (T-CMEMS-HIER-005): start with `marine_search_groups` for free-text routing, drill into `marine_search_products` with the chosen `group_ids`, then resolve datasets via `marine_search_datasets` with the chosen `product_ids` (plus optional `bbox` / `time_range`). The pipeline is the default path for any agentic query; the bare `marine_search_datasets` (`keyword=` only) flat path stays available for known dataset ids.
 - **CDS / ADS / EWDS** (eight tools, registered when the `cds` backend is enabled AND credentials resolve): `cds_search_datasets`, `cds_describe_dataset`, `cds_apply_constraints`, `cds_estimate_request`, `cds_submit_request`, `cds_check_request_status`, `cds_download_request_result`, `cds_cancel_request`.
 
@@ -59,6 +59,60 @@ None.
 
 // response (structured)
 { "version": "0.0.1", "backends": { "cmems": { "registered": true, ... } }, ... }
+```
+
+---
+
+## `copernicus_mcp_list_jobs`
+
+Enumerate recent submitted jobs (downloads) from the local state store so a fresh session can recover work after a restart — no `request_id` required. Feed a returned `request_id` to the per-backend status / fetch / cancel tools.
+
+### Inputs
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `status` | `string[]` \| null | `null` | Keep only jobs in these statuses. Allowed: `queued`, `running`, `successful`, `failed`, `cancelled`. |
+| `limit` | integer | `50` | Maximum jobs returned, newest first. Clamped to `1..500`. |
+| `created_after` | string \| null | `null` | ISO-8601 UTC lower bound (strict `>`), e.g. `2026-06-01T00:00:00Z`. |
+
+### Output
+
+```jsonc
+{
+  "results": [
+    {
+      "request_id": "…",
+      "backend": "cds",             // cmems | cds
+      "operation": "submit",
+      "status": "successful",        // queued | running | successful | failed | cancelled
+      "dataset": "reanalysis-era5-single-levels",
+      "created_at": "2026-06-01T12:00:00Z",
+      "updated_at": "2026-06-01T12:03:00Z",
+      "error_class": "BackendError"  // present only when status == "failed"
+    }
+  ],
+  "count": 1
+}
+```
+
+The listing does not carry the result file path — the workflow row stores no result descriptor. Retrieve a completed job's file with the per-backend download/fetch tool (or the `copernicus://jobs/{request_id}` resource) using its `request_id`.
+
+### Errors
+
+- `ValidationError` (`recovery_action="modify_request_parameters"`) — `status` contains a value outside the five canonical statuses, or `created_after` is not a valid ISO-8601 timestamp.
+- `BackendError` (`error_subclass="list_jobs_failure"`) — internal failure while listing; the underlying message is sanitised before it reaches the client.
+
+### Examples
+
+```jsonc
+// request — all recent jobs
+{"name": "copernicus_mcp_list_jobs", "arguments": {}}
+
+// request — only in-flight, newest 10
+{"name": "copernicus_mcp_list_jobs", "arguments": {"status": ["queued", "running"], "limit": 10}}
+
+// response (structured)
+{ "results": [ { "request_id": "…", "backend": "cds", "status": "running", "dataset": "…" } ], "count": 1 }
 ```
 
 ---
@@ -728,7 +782,9 @@ Note: `cds_apply_constraints` is read-only and does **not** require credentials.
 
 ## `cds_estimate_request`
 
-Heuristic byte-size estimator + queue-tier classification.
+Size + queue estimator. Combines the CDS `/costing` pre-flight (the server's own
+cost units and the dataset's per-request cost limit) with a calibrated or curated
+bytes-per-unit factor, and learns from every completed download.
 
 ### Inputs
 
@@ -737,7 +793,12 @@ Heuristic byte-size estimator + queue-tier classification.
 
 ### Output
 
-`{estimated_size_bytes, estimated_size_human, fields_count, queue_latency_tier, epistemic_status, runtime_compatible, advisory_message}`. `queue_latency_tier` is one of `light` / `medium` / `heavy` — driven by field count per research §6.5.4 (server pulls fields independently from tape). `epistemic_status` is `curated_approximate` (dataset in the curated bytes-per-field map, ±50%) or `default_heuristic` (unknown dataset, fallback to 2 MB/field, ±10×). `runtime_compatible` is `true` iff the dataset id is in the bundled CDS / ADS / EWDS catalogue snapshot — agents should treat `false` as a strong hint that submit will likely 404.
+`{estimated_size_bytes, estimated_size_human, epistemic_status, cost, fields_count, queue_latency_tier, runtime_compatible, advisory_message}` (plus `calibration_observations` when calibrated).
+
+- **`estimated_size_bytes` / `estimated_size_human` may be `null`** — for whole-file products whose size cannot be derived from request shape, the estimate is honestly reported as unknown rather than an invented number. The first successful retrieval calibrates it.
+- `epistemic_status`: `calibrated` (learned from prior downloads of this request shape), `curated_approximate` (±50%), `default_heuristic` (unknown dataset, ±10×), or `unknown` (whole-file, size unknowable until first retrieval).
+- `cost`: `{units, limit, exceeds_limit, source}` from the costing endpoint, or `null` if it was unreachable. **`exceeds_limit: true` means the server will reject the request** — narrow it (split along year, then month).
+- `queue_latency_tier` (`light` / `medium` / `heavy`) is cost-unit / field-count driven per research §6.5.4. `runtime_compatible` is `true` iff the dataset is in the bundled catalogue snapshot — treat `false` as a strong hint submit will 404.
 
 ### Errors
 
@@ -750,7 +811,8 @@ Queue a retrieve. Returns immediately after the server acknowledges; downloads h
 ### Inputs
 
 - `dataset_id`, `inputs` — same as `cds_estimate_request`.
-- `confirmed` (bool, default false) — bypass the size + queue-tier confirmation gate.
+- `confirmed` (bool, default false) — bypass the size + queue-tier confirmation gate; also accepts an auto-chunk split and clears the first fan-out tier.
+- `confirm_large_fanout` (bool, default false) — second, deliberate ack for a very large auto-chunk split (more parts than `cds_auto_chunk_reconfirm_above`); required *in addition to* `confirmed`.
 
 ### Output (queued)
 
@@ -773,6 +835,36 @@ The gate fires when **either** the estimated bytes exceed `cds_per_request_size_
 ```
 
 Resubmit with `confirmed: true` to proceed.
+
+### Auto-chunking (requests over the dataset cost limit)
+
+CDS enforces a per-request cost limit (a field-count budget returned by the server's pre-flight). A request above that limit is rejected with HTTP 403 ("cost limits exceeded"). Rather than failing, `cds_submit_request` proposes a split along the calendar axis and runs the parts as one logical workflow.
+
+When an over-limit request can be split — it has a list-valued `year`, and optionally `month` / `day` — the first call returns a proposal instead of queueing:
+
+```jsonc
+{"confirmation_required": true,
+ "reason": "cost_limit_requires_chunking",
+ "chunked": true,
+ "estimated_cost": {"type": "cds_cost_units", "cost_units": 1827, "cost_limit": 400},
+ "chunking": {"suggested_granularity": "year",
+              "min_chunks": {"year": 5, "month": 5, "day": 60}},
+ "next_action": "re-submit ... with chunk_by set to year/month/day (or confirmed=true for year)"}
+```
+
+Choose a granularity and re-submit with `chunk_by` set to `year`, `month`, or `day` (or `confirmed: true` to accept the suggested `year`). The server validates each chunk's cost, creates a parent workflow, and submits **all** the child jobs at once — CDS queues any excess, so there is no inflight throttle. The response is the parent:
+
+```jsonc
+{"status": "queued", "request_id": "<parent-id>", "cache_key": "...",
+ "chunked": true, "chunk_count": 5,
+ "result": {"uri": "copernicus://jobs/<parent-id>"}}
+```
+
+The parent `request_id` is a single handle: poll it with `cds_check_request_status`, download all parts with `cds_download_request_result`, cancel the whole set with `cds_cancel_request`. The parts advance automatically on each poll until every chunk completes.
+
+**Large fan-outs require confirmation.** Because all parts submit at once, a big split launches many CDS jobs together. A validated plan with more than `cds_auto_chunk_confirm_above` chunks (default 30) and no `confirmed` returns `{"confirmation_required": true, "reason": "auto_chunk_job_count", "chunk_count": N, …}`; re-submit with `confirmed: true` to proceed (a human should approve a large batch). A plan over `cds_auto_chunk_reconfirm_above` (default 100) demands a **second, deliberate** ack (`reason: "auto_chunk_job_count_large"`): `confirmed: true` alone is not enough — also pass `confirm_large_fanout: true`, so a glitched agent blanket-setting `confirmed` cannot launch a runaway batch. A plan over `cds_auto_chunk_max_chunks` (default 366) is rejected outright (`too_many_chunks`) — no confirm bypasses it. All three thresholds are configurable under `budget.*`.
+
+A request that cannot be split (no list-valued calendar axis, or a single calendar cell already over the limit) is rejected with a `ValidationError` suggesting a manual narrowing. Auto-chunking is on by default; disable it per request with `auto_chunk: false`, or globally with `budget.cds_auto_chunk_enabled: false`. The split axes must hold plain calendar tokens (a non-numeric value on `year` / `month` / `day` disables chunking for that request).
 
 ### Errors
 
@@ -804,6 +896,25 @@ Look up the workflow row for a request_id.
 
 `result.metadata.content_type` is `application/x-netcdf` / `application/x-grib` / `application/zip` / `text/csv` / `application/octet-stream`, derived from the actual bytes on disk (the cached filename's extension reflects the real format, not whatever the inputs requested — see `cds_download_request_result`).
 
+### Output (downloading)
+
+When the CDS job has finished server-side and the result file is being fetched, `check_status` returns `{status: "running", phase: "downloading"}` **immediately** rather than blocking on the transfer — the download runs in the background, so the agent stays free. Keep polling; a later poll returns `successful` with the `filepath`. (A small file may finish within a brief inline grace and return `successful` in one poll, so `phase` is absent there.)
+
+### Output (chunked parent)
+
+A request that was auto-split returns the aggregate instead:
+
+```jsonc
+{"status": "running", "request_id": "<parent-id>", "chunked": true, "chunk_count": 5,
+ "progress": {"completed": 2, "total": 5},
+ "chunks": {"total": 5, "successful": 2, "running": 2, "queued": 1, "failed": 0, "cancelled": 0},
+ "per_chunk": [{"index": 0, "request_id": "<child-id>", "status": "successful"}, "..."]}
+```
+
+`status` is the aggregate: `successful` once every chunk completes, `failed` if any chunk fails (the remaining in-flight chunks are then cancelled), `cancelled` if you cancel the parent. Each poll advances the workflow — it finalises completed children, so poll the parent until it reaches a terminal state. The individual `per_chunk[].request_id` values are also pollable on their own.
+
+When `status` is `successful`, the response already carries the full multi-file `result` (the same `files` / `merge_hint` set that `cds_download_request_result` returns) — the chunk files were downloaded during polling, so there is no need to call download separately. If a chunk file has since been evicted, its index is listed in `result.evicted_chunk_indices`.
+
 ### Errors
 
 - `NotFoundError` — request_id not known locally.
@@ -825,6 +936,21 @@ Fetch a completed result from the canonical cache. Returns a file descriptor —
 
 - The backend derives an initial extension from the submit `inputs` (`download_format: zip` → `.zip`; `data_format: netcdf | netcdf3 | netcdf4 | netcdf_legacy` → `.nc`; `data_format: grib | grib1 | grib2` → `.grib`; `data_format: csv` → `.csv`).
 - After download a magic-byte sniff overrides the extension if the actual content disagrees (e.g. ECMWF wraps multi-variable NetCDF requests in a ZIP — the cached file lands as `.zip` regardless of what the agent asked for, and `content_type` reports `application/zip`). Trust the on-disk extension and the reported `content_type`, not the original request shape.
+
+### Output (chunked parent)
+
+A successful chunked parent returns a descriptor **set** — one file per chunk, ordered by chunk index — not a single recombined file:
+
+```jsonc
+{"status": "successful", "request_id": "<parent-id>", "chunked": true, "chunk_count": 5,
+ "result": {"files": [{"chunk_index": 0, "filepath": "...", "size_bytes": 12345,
+                       "content_type": "application/x-grib", "span": {"year": ["2020"]}}, "..."],
+            "formats": ["application/x-grib"],
+            "heterogeneous_formats": false,
+            "merge_hint": "..."}}
+```
+
+The server does not stitch or re-encode the parts — merging is the consumer's job (for example `xarray.open_mfdataset(sorted_filepaths, combine="nested", concat_dim="time")`). The files are non-overlapping and ordered by `chunk_index`. If `heterogeneous_formats` is `true`, CDS returned different formats for different chunks (it occasionally zips one); convert them to a single format before merging. If a chunk's cached file was evicted, download raises `CacheError` (`cache_eviction`) naming the missing chunk indices — re-submit with `force_refresh: true` to repopulate the whole set. A parent that is not yet `successful` raises a `BackendError` (`result_not_ready`) whose `context.partial_files` lists the chunks already done.
 
 ### Errors
 
@@ -850,3 +976,5 @@ Cancel a queued or running request. Idempotent on already-terminal rows.
 ### Notes
 
 Cancellation is best-effort: the server may have processed the request between submit and cancel. The cancel call returns successfully in that race window with `status: "successful"`.
+
+Cancelling a chunked parent stops the plan and cascades to its children: in-flight chunks are cancelled (best-effort), already-completed chunks keep their files. The parent ends `cancelled`.

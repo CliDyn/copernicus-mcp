@@ -25,6 +25,26 @@ def _reset_cli_globals() -> AsyncIterator[None]:
         cli_mod._cli_cache_dir = None
 
 
+@pytest.fixture(autouse=True)
+def _no_network_costing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-CDS-EST2-001: ``CdsBackend.estimate``/``submit`` now call the live
+    ``/costing`` endpoint via ``fetch_costing``. Unit tests must not touch the
+    network — default every test to "costing unavailable" (returns ``None`` →
+    the legacy heuristic), exactly as a real offline/endpoint-down run behaves.
+    Tests that exercise the costing-available path override this with their own
+    monkeypatch. The costing-client unit tests call ``costing.fetch_costing``
+    directly with a fake transport, so this patch of the backend symbol does
+    not affect them.
+    """
+
+    async def _none(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "copernicus_mcp.backends.cds.backend.fetch_costing", _none, raising=False
+    )
+
+
 @pytest.fixture
 def tmp_state_dir(tmp_path: Path) -> Path:
     """Temporary directory mimicking the runtime layout under XDG dirs.

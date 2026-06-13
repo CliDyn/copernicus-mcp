@@ -392,6 +392,10 @@ async def marine_estimate_subset(
     Use this tool to preview byte-size, variable list, and confirmation
     requirements without actually downloading data.
 
+    **The byte-size is an ESTIMATE, not a contract — the actual download can
+    differ. Do not rely on it for hard limits or quotas; treat it as
+    approximate.**
+
     Inputs: same shape as marine_subset_dataset.
 
     Outputs:

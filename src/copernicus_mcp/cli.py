@@ -51,6 +51,11 @@ cds_app = typer.Typer(
     help="Copernicus Climate / Atmosphere / Emergency Data Store subcommands (T-CDS-007).",
 )
 app.add_typer(cds_app, name="cds")
+jobs_app = typer.Typer(
+    name="jobs",
+    help="Recover past jobs (downloads) recorded across sessions (T-JOBS-RECOVERY).",
+)
+app.add_typer(jobs_app, name="jobs")
 
 # Two consoles: ``console`` for primary payload output (non-JSON tables /
 # panels go to stdout). ``err_console`` for diagnostics — error panels,
@@ -201,6 +206,44 @@ def status(
 
     payload = _run(_go())
     _emit(payload, json_out=json_out, title="Status")
+
+
+@jobs_app.command("list")
+def jobs_list(
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help=(
+            "Comma-separated statuses to filter: "
+            "queued,running,successful,failed,cancelled."
+        ),
+    ),
+    limit: int = typer.Option(50, "--limit", help="Max jobs to return (clamped to 1..500)."),
+    created_after: str | None = typer.Option(
+        None,
+        "--created-after",
+        help="ISO-8601 UTC lower bound (strict), e.g. 2026-06-01T00:00:00Z.",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+) -> None:
+    """List recent jobs from the local state store for cross-session recovery.
+
+    Works without a request_id: enumerate what earlier sessions submitted, then
+    drive a specific job with the per-backend status/cancel commands using a
+    request_id from the listing.
+    """
+    statuses = [s.strip() for s in status.split(",") if s.strip()] if status else None
+
+    async def _go() -> dict[str, Any]:
+        async with _build_orchestrator_for_cli() as orch:
+            return await orch.list_jobs(
+                status=statuses, limit=limit, created_after=created_after
+            )
+
+    payload = _run(_go())
+    if "error" in payload:
+        _handle_error(payload, json_out=json_out)
+    _emit(payload, json_out=json_out, title="Jobs")
 
 
 def _parse_csv_floats(spec: str, *, count: int, name: str) -> tuple[float, ...]:
@@ -464,13 +507,56 @@ def marine_subset(
 
 
 def _show_confirmation(envelope: dict[str, Any]) -> None:
-    """Print confirmation prompt to stderr (so ``--json`` stdout stays clean)."""
-    msg = envelope.get("advisory_message", "Large request")
+    """Print confirmation prompt to stderr (so ``--json`` stdout stays clean).
+
+    Surfaces auto-chunk fan-out details (job count, per-granularity split sizes,
+    next action) — the CLI's single confirm grants BOTH the confirm and the
+    large-fan-out reconfirm, so a human approving here must see what they are
+    authorising rather than a generic panel."""
+    next_action = envelope.get("next_action")
+    msg = str(envelope.get("advisory_message") or next_action or "Large request")
     size = envelope.get("estimated_size_bytes")
+    chunk_count = envelope.get("chunk_count")
+    chunking = envelope.get("chunking")
+    if isinstance(chunking, dict) and isinstance(chunking.get("granularities"), dict):
+        parts = ", ".join(
+            f"{g}={info.get('chunks')}"
+            for g, info in chunking["granularities"].items()
+            if isinstance(info, dict)
+        )
+        if parts:
+            msg = f"{msg}\n\nsplit options (chunks per granularity): {parts}"
     title = "Confirmation required"
     if size:
         title = f"{title} (~{size / 1_000_000_000:.2f} GB)"
-    err_console.print(Panel(str(msg), title=title, style="yellow"))
+    elif chunk_count is not None:
+        title = f"{title} ({chunk_count} parallel jobs)"
+    elif envelope.get("reason"):
+        title = f"{title}: {envelope['reason']}"
+    err_console.print(Panel(msg, title=title, style="yellow"))
+
+
+def _progress_line(payload: dict[str, Any]) -> str | None:
+    """A one-line download-position summary shown live during ``wait``: a chunked
+    parent's "parts: N/M done", or a single-file background download's "downloading…"
+    (so a long single-file fetch does not look hung). ``None`` otherwise."""
+    prog = payload.get("progress")
+    if not isinstance(prog, dict):
+        if payload.get("phase") == "downloading":
+            return "downloading the result file…"
+        return None
+    completed, total = prog.get("completed"), prog.get("total")
+    if not isinstance(total, int) or total <= 0 or not isinstance(completed, int):
+        return None
+    chunks_raw = payload.get("chunks")
+    chunks: dict[str, Any] = chunks_raw if isinstance(chunks_raw, dict) else {}
+    extra = [
+        f"{k} {chunks[k]}"
+        for k in ("running", "queued", "failed")
+        if isinstance(chunks.get(k), int) and chunks[k]
+    ]
+    suffix = f" ({', '.join(extra)})" if extra else ""
+    return f"parts: {completed}/{total} done{suffix}"
 
 
 def _interactive_confirm() -> bool:
@@ -725,7 +811,13 @@ def cds_estimate(
     ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Heuristic byte-size estimate for a CDS retrieve request."""
+    """Size + queue estimate for a CDS retrieve request.
+
+    Uses the CDS ``/costing`` pre-flight plus a calibrated/curated
+    bytes-per-unit factor. ``estimated_size_bytes`` may be ``null`` for
+    whole-file products (honest "size unknown"); the ``cost`` block carries
+    the server's cost units, the dataset's limit, and ``exceeds_limit``.
+    """
     inputs = _read_inputs_json(inputs_file)
     params = {"dataset_id": dataset_id, "inputs": inputs}
 
@@ -739,6 +831,40 @@ def cds_estimate(
     _emit(_unwrap_result(envelope), json_out=json_out, title="Estimate")
 
 
+@cds_app.command("apply-constraints")
+def cds_apply_constraints(
+    dataset_id: str = typer.Option(..., "--dataset-id"),
+    inputs_file: str | None = typer.Option(
+        None,
+        "--inputs-file",
+        help=(
+            "JSON file with a PARTIAL cdsapi inputs dict, or '-' for stdin. "
+            "Omit for empty inputs → the dataset's full per-field valid values."
+        ),
+    ),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the still-valid values per field for a (partial) CDS request.
+
+    Empty inputs return every field's full vocabulary; a partial selection
+    narrows the rest. Read-only and anonymous. Used by the calibration
+    campaign to pre-validate request vocabulary before submitting.
+    """
+    inputs = _read_inputs_json(inputs_file) if inputs_file else {}
+    params = {"dataset_id": dataset_id, "inputs": inputs}
+
+    async def _go() -> dict[str, Any]:
+        async with _build_orchestrator_for_cli() as orch:
+            return await orch.run(
+                backend="cds", operation="apply_constraints", params=params
+            )
+
+    envelope = _run(_go())
+    if "error" in envelope:
+        _handle_error(envelope, json_out=json_out)
+    _emit(_unwrap_result(envelope), json_out=json_out, title="Valid remaining")
+
+
 @cds_app.command("submit")
 def cds_submit(
     dataset_id: str = typer.Option(..., "--dataset-id"),
@@ -750,6 +876,18 @@ def cds_submit(
     yes: bool = typer.Option(
         False, "--yes", help="Skip the size + queue-tier confirmation prompt."
     ),
+    chunk_by: str | None = typer.Option(
+        None,
+        "--chunk-by",
+        help=(
+            "Split an over-limit request along the calendar axis (year|month|day) "
+            "and run the parts as one logical workflow. With --yes (and no "
+            "--chunk-by) an over-limit request is split by year."
+        ),
+    ),
+    force_refresh: bool = typer.Option(
+        False, "--force-refresh", help="Re-run from scratch, bypassing the cache."
+    ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Submit a CDS / ADS / EWDS retrieve request.
@@ -759,13 +897,27 @@ def cds_submit(
     ``cds check-status <request_id>`` or block via
     ``cds wait <request_id>``; download via ``cds download <request_id>
     --target <path>`` once the row reaches ``successful``.
+
+    A request over the dataset's cost limit is split automatically: re-run
+    with ``--chunk-by month`` (or ``--yes`` to split by year). The parent
+    request_id then drives the whole multi-file set through wait/download/cancel.
     """
     inputs = _read_inputs_json(inputs_file)
     params = {"dataset_id": dataset_id, "inputs": inputs}
+    base_options: dict[str, Any] = {}
+    if chunk_by is not None:
+        base_options["chunk_by"] = chunk_by
+    if force_refresh:
+        base_options["force_refresh"] = True
 
     async def _go() -> dict[str, Any]:
         async with _build_orchestrator_for_cli() as orch:
-            envelope = await orch.run(backend="cds", operation="submit", params=params)
+            envelope = await orch.run(
+                backend="cds",
+                operation="submit",
+                params=params,
+                options=base_options or None,
+            )
             if envelope.get("confirmation_required"):
                 _show_confirmation(envelope)
                 if not yes and not _interactive_confirm():
@@ -774,7 +926,15 @@ def cds_submit(
                     backend="cds",
                     operation="submit",
                     params=params,
-                    options={"confirmed": True},
+                    # A human confirming at the CLI grants both the size/tier
+                    # confirm and the large-fan-out reconfirm — the two-tier
+                    # repeat is the agent-escalation path; an interactive human
+                    # is already deliberate, so one prompt covers both.
+                    options={
+                        **base_options,
+                        "confirmed": True,
+                        "confirm_large_fanout": True,
+                    },
                 )
             return envelope
 
@@ -831,6 +991,7 @@ def cds_wait(
     async def _go() -> dict[str, Any]:
         async with _build_orchestrator_for_cli() as orch:
             deadline = _time.monotonic() + timeout
+            last_progress: str | None = None
             while True:
                 envelope = await orch.run(
                     backend="cds",
@@ -840,6 +1001,10 @@ def cds_wait(
                 if "error" in envelope:
                     return envelope
                 payload = _unwrap_result(envelope)
+                line = _progress_line(payload)
+                if line is not None and line != last_progress and not json_out:
+                    err_console.print(line, style="dim")
+                    last_progress = line
                 status = payload.get("status")
                 if status in _TERMINAL_STATUSES:
                     return envelope

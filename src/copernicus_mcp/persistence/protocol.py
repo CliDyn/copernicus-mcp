@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Literal, Protocol, TypedDict
+from collections.abc import AsyncIterator, Sequence
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 WorkflowStatus = Literal["queued", "running", "successful", "failed", "cancelled"]
 """Five canonical workflow statuses (the project conventions invariant #5).
@@ -23,6 +23,11 @@ class WorkflowRecord(TypedDict):
     error_record_json: str | None
     created_at: str
     updated_at: str
+    # T-CDS-CHUNK-001: parent/child linkage for auto-chunked workflows.
+    # NotRequired so existing single-request constructors that omit them stay
+    # valid; ``_row_to_workflow`` always populates them from the DB.
+    parent_request_id: NotRequired[str | None]
+    chunk_plan_json: NotRequired[str | None]
 
 
 class ProvenanceRecord(TypedDict):
@@ -80,6 +85,31 @@ class PersistenceBackend(Protocol):
         self, cache_key: str
     ) -> WorkflowRecord | None: ...
     async def fetch_workflow(self, request_id: str) -> WorkflowRecord | None: ...
+
+    # T-CDS-CHUNK-001: parent/child auto-chunk linkage.
+    async def list_child_workflows(
+        self, parent_request_id: str
+    ) -> list[WorkflowRecord]: ...
+
+    # T-JOBS-RECOVERY: cross-session discovery — recent workflows, newest-first.
+    async def list_workflows(
+        self,
+        *,
+        status: Sequence[str] | None = None,
+        created_after: str | None = None,
+        limit: int = 50,
+    ) -> list[WorkflowRecord]: ...
+    async def update_chunk_plan(
+        self, request_id: str, chunk_plan_json: str
+    ) -> None: ...
+
+    # T-CDS-EST2-003: size calibration observations.
+    async def record_size_observation(
+        self, observation: dict[str, Any]
+    ) -> None: ...
+    async def list_size_observations(
+        self, backend_id: str, dataset_id: str, signature: str | None
+    ) -> list[dict[str, Any]]: ...
 
     async def record_provenance(self, record: ProvenanceRecord) -> None: ...
     async def fetch_provenance(self, record_id: str) -> ProvenanceRecord | None: ...

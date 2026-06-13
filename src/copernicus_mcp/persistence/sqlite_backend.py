@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -17,7 +17,11 @@ from copernicus_mcp.persistence.protocol import (
     WorkflowRecord,
     WorkflowStatus,
 )
-from copernicus_mcp.persistence.schema import ALL_DDL
+from copernicus_mcp.persistence.schema import (
+    ADDITIVE_COLUMN_MIGRATIONS,
+    ALL_DDL,
+    POST_MIGRATION_INDICES,
+)
 
 
 def _iso_now() -> str:
@@ -51,12 +55,29 @@ class SqliteBackend:
         self._conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
 
+    async def _apply_schema(self, conn: aiosqlite.Connection) -> None:
+        """Create base tables/indices, then run additive column migrations and
+        the columns-dependent indices (T-CDS-CHUNK-001). Idempotent."""
+        for stmt in ALL_DDL:
+            await conn.execute(stmt)
+        # Additive column migration: on a fresh DB the columns already exist
+        # (the CREATE includes them) so this is a no-op; on an existing DB the
+        # CREATE was a no-op and we ALTER in the missing columns.
+        for table, column, coltype in ADDITIVE_COLUMN_MIGRATIONS:
+            cur = await conn.execute(f"PRAGMA table_info({table})")
+            existing = {row[1] for row in await cur.fetchall()}
+            if column not in existing:
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"
+                )
+        for stmt in POST_MIGRATION_INDICES:
+            await conn.execute(stmt)
+
     async def initialise(self) -> None:
         if self._conn is not None:
             # Re-running on an open backend is fine (idempotent CREATEs).
             async with self._lock:
-                for stmt in ALL_DDL:
-                    await self._conn.execute(stmt)
+                await self._apply_schema(self._conn)
                 await self._conn.commit()
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,8 +93,7 @@ class SqliteBackend:
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA foreign_keys=ON;")
             await conn.execute("PRAGMA busy_timeout=5000;")
-            for stmt in ALL_DDL:
-                await conn.execute(stmt)
+            await self._apply_schema(conn)
             await conn.commit()
             success = True
         finally:
@@ -101,8 +121,9 @@ class SqliteBackend:
                 await self._conn_required().execute(
                     "INSERT INTO workflows (request_id, backend_id, operation, "
                     "status, cache_key, request_json, response_json, "
-                    "error_record_json, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "error_record_json, created_at, updated_at, "
+                    "parent_request_id, chunk_plan_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         record["request_id"],
                         record["backend_id"],
@@ -114,6 +135,8 @@ class SqliteBackend:
                         record.get("error_record_json"),
                         record["created_at"],
                         record["updated_at"],
+                        record.get("parent_request_id"),
+                        record.get("chunk_plan_json"),
                     ),
                 )
                 await self._conn_required().commit()
@@ -241,6 +264,67 @@ class SqliteBackend:
             )
             row = await cur.fetchone()
             return _row_to_workflow(row) if row else None
+
+    async def list_child_workflows(
+        self, parent_request_id: str
+    ) -> list[WorkflowRecord]:
+        """T-CDS-CHUNK-001: child rows of a chunked parent, oldest-first."""
+        async with self._lock:
+            cur = await self._conn_required().execute(
+                "SELECT * FROM workflows WHERE parent_request_id = ? "
+                "ORDER BY created_at ASC, rowid ASC",
+                (parent_request_id,),
+            )
+            rows = await cur.fetchall()
+            return [_row_to_workflow(row) for row in rows]
+
+    async def list_workflows(
+        self,
+        *,
+        status: Sequence[str] | None = None,
+        created_after: str | None = None,
+        limit: int = 50,
+    ) -> list[WorkflowRecord]:
+        """T-JOBS-RECOVERY: recent workflows, newest-first, for cross-session
+        discovery (a fresh agent enumerating jobs without a ``request_id``).
+
+        ``status`` filters to the given values; ``created_after`` is a strict
+        ``created_at > ?`` lower bound. ``limit`` is clamped to ``1..500`` —
+        SQLite reads ``LIMIT <= 0`` as *unbounded*, so a stray non-positive
+        limit must not be able to dump the whole table.
+        """
+        capped = max(1, min(int(limit), 500))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            placeholders = ",".join("?" for _ in status)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(status)
+        if created_after:
+            clauses.append("created_at > ?")
+            params.append(created_after)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.append(capped)
+        async with self._lock:
+            cur = await self._conn_required().execute(
+                f"SELECT * FROM workflows {where}"
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                params,
+            )
+            rows = await cur.fetchall()
+            return [_row_to_workflow(row) for row in rows]
+
+    async def update_chunk_plan(
+        self, request_id: str, chunk_plan_json: str
+    ) -> None:
+        """T-CDS-CHUNK-001: persist a parent's chunk plan."""
+        async with self._lock:
+            await self._conn_required().execute(
+                "UPDATE workflows SET chunk_plan_json = ?, updated_at = ? "
+                "WHERE request_id = ?",
+                (chunk_plan_json, _iso_now(), request_id),
+            )
+            await self._conn_required().commit()
 
     # ------------------------------------------------------------------
     # provenance
@@ -439,11 +523,64 @@ class SqliteBackend:
         Codex T-009 diff review: ``rollback()`` itself can raise; if it does
         inside an ``except IntegrityError`` block, the rollback exception
         replaces our ``ValidationError``.
+
+        T-CDS-EST2-003 bugfix: this previously called ``self._safe_rollback()``
+        (itself), so the rollback never ran and the resulting ``RecursionError``
+        was swallowed. Roll back the connection.
         """
         try:
-            await self._safe_rollback()
+            conn = self._conn
+            if conn is not None:
+                await conn.rollback()
         except Exception:  # noqa: BLE001 — last-ditch swallow on cleanup
             pass
+
+    async def record_size_observation(self, observation: dict[str, Any]) -> None:
+        """Insert one ``size_observations`` row (T-CDS-EST2-003).
+
+        ``cost_units`` may be ``None`` (restart / FIFO-evicted completion).
+        ``area_fraction`` defaults to 1.0 if absent.
+        """
+        async with self._lock:
+            await self._conn_required().execute(
+                "INSERT INTO size_observations (observation_id, backend_id, "
+                "dataset_id, signature, cost_units, size_bytes, area_fraction, "
+                "request_id, observed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    observation["observation_id"],
+                    observation["backend_id"],
+                    observation["dataset_id"],
+                    observation["signature"],
+                    observation.get("cost_units"),
+                    observation["size_bytes"],
+                    observation.get("area_fraction", 1.0),
+                    observation.get("request_id"),
+                    observation["observed_at"],
+                ),
+            )
+            await self._conn_required().commit()
+
+    async def list_size_observations(
+        self, backend_id: str, dataset_id: str, signature: str | None
+    ) -> list[dict[str, Any]]:
+        """Return observations for ``(backend_id, dataset_id)``, optionally
+        narrowed to one ``signature``. Ordered oldest-first (EWMA-friendly)."""
+        async with self._lock:
+            if signature is None:
+                cur = await self._conn_required().execute(
+                    "SELECT * FROM size_observations WHERE backend_id = ? "
+                    "AND dataset_id = ? ORDER BY observed_at ASC, rowid ASC",
+                    (backend_id, dataset_id),
+                )
+            else:
+                cur = await self._conn_required().execute(
+                    "SELECT * FROM size_observations WHERE backend_id = ? "
+                    "AND dataset_id = ? AND signature = ? "
+                    "ORDER BY observed_at ASC, rowid ASC",
+                    (backend_id, dataset_id, signature),
+                )
+            rows = await cur.fetchall()
+            return [dict(row) for row in rows]
 
 
 def _row_to_workflow(row: Any) -> WorkflowRecord:
@@ -460,6 +597,8 @@ def _row_to_workflow(row: Any) -> WorkflowRecord:
             "error_record_json": row["error_record_json"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "parent_request_id": row["parent_request_id"],
+            "chunk_plan_json": row["chunk_plan_json"],
         },
     )
 

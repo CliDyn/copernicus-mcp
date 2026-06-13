@@ -21,6 +21,17 @@ def test_defaults_load_and_validate() -> None:
     assert cfg.storage.cache_eviction_policy == "lru"
 
 
+def test_budget_policy_auto_chunk_defaults() -> None:
+    """T-CDS-CHUNK v2: auto-chunking on by default, no inflight throttle (submit
+    all), with a generous max_chunks guard against pathological fan-out."""
+    from copernicus_mcp.config.schema import BudgetPolicy
+
+    budget = BudgetPolicy()
+    assert budget.cds_auto_chunk_enabled is True
+    assert budget.cds_auto_chunk_max_chunks == 366
+    assert not hasattr(budget, "cds_auto_chunk_max_inflight")
+
+
 def test_yaml_overrides_defaults(tmp_path: Path) -> None:
     from copernicus_mcp.config import ConfigLoader
 
@@ -204,3 +215,22 @@ def test_deep_merge_nested_dicts() -> None:
     }
     # base must not be mutated
     assert base == {"a": {"x": 1, "y": 2}, "b": [1, 2], "c": 3}
+
+
+def test_budget_policy_validates_fanout_thresholds() -> None:
+    """BudgetPolicy enforces the two real constraints — non-negative thresholds
+    and ordered tiers (confirm <= reconfirm) — but NOT reconfirm < max_chunks: a
+    hard cap set below the soft thresholds is a legitimate conservative config
+    (plans over it are hard-rejected, stricter than tier 2, not bypassed)."""
+    from copernicus_mcp.config.schema import BudgetPolicy
+
+    BudgetPolicy()  # default 30 <= 100, max 366
+    # A low hard cap below the soft thresholds is allowed (conservative, safe).
+    BudgetPolicy(cds_auto_chunk_max_chunks=50)
+    BudgetPolicy(cds_auto_chunk_reconfirm_above=400, cds_auto_chunk_max_chunks=366)
+    with pytest.raises(ValidationError):  # tiers out of order
+        BudgetPolicy(cds_auto_chunk_confirm_above=50, cds_auto_chunk_reconfirm_above=30)
+    with pytest.raises(ValidationError):  # negative threshold
+        BudgetPolicy(cds_auto_chunk_confirm_above=-1)
+    with pytest.raises(ValidationError):  # nonsensical zero hard cap
+        BudgetPolicy(cds_auto_chunk_max_chunks=0)

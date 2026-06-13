@@ -139,6 +139,73 @@ async def test_cds_submit_request_forwards_confirmed_flag() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cds_submit_request_forwards_chunk_options() -> None:
+    """T-CDS-CHUNK: chunk_by / auto_chunk / force_refresh are plumbed through
+    ``__options`` and never reach the validated request params."""
+    from copernicus_mcp.backends.cds.tools import (
+        CdsSubmitRequestInput,
+        cds_submit_request,
+    )
+
+    orch = AsyncMock()
+    orch.run.return_value = {"result": {"status": "queued", "request_id": "p"}}
+    payload = {
+        **_good_submit_payload(),
+        "chunk_by": "month",
+        "auto_chunk": False,
+        "force_refresh": True,
+    }
+    await cds_submit_request(CdsSubmitRequestInput(**payload), orchestrator=orch)
+    kwargs = orch.run.call_args.kwargs
+    for key in ("chunk_by", "auto_chunk", "force_refresh"):
+        assert key not in kwargs["params"]
+    assert kwargs["options"] == {
+        "chunk_by": "month",
+        "auto_chunk": False,
+        "force_refresh": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cds_submit_request_forwards_confirm_large_fanout() -> None:
+    """T-CDS-CHUNK fan-out: confirm_large_fanout is the second, deliberate ack for
+    a > reconfirm_above split; it rides __options, never the request params."""
+    from copernicus_mcp.backends.cds.tools import (
+        CdsSubmitRequestInput,
+        cds_submit_request,
+    )
+
+    orch = AsyncMock()
+    orch.run.return_value = {"result": {"status": "queued", "request_id": "p"}}
+    payload = {
+        **_good_submit_payload(),
+        "confirmed": True,
+        "confirm_large_fanout": True,
+    }
+    await cds_submit_request(CdsSubmitRequestInput(**payload), orchestrator=orch)
+    kwargs = orch.run.call_args.kwargs
+    assert "confirm_large_fanout" not in kwargs["params"]
+    assert kwargs["options"] == {"confirmed": True, "confirm_large_fanout": True}
+
+
+@pytest.mark.asyncio
+async def test_cds_submit_request_omits_default_chunk_options() -> None:
+    """Defaults (chunk_by=None, auto_chunk=True, force_refresh=False) add nothing
+    to options — a plain submit stays option-free."""
+    from copernicus_mcp.backends.cds.tools import (
+        CdsSubmitRequestInput,
+        cds_submit_request,
+    )
+
+    orch = AsyncMock()
+    orch.run.return_value = {"result": {"status": "queued", "request_id": "p"}}
+    await cds_submit_request(
+        CdsSubmitRequestInput(**_good_submit_payload()), orchestrator=orch
+    )
+    assert orch.run.call_args.kwargs["options"] is None
+
+
+@pytest.mark.asyncio
 async def test_cds_submit_request_default_no_options() -> None:
     """Without ``confirmed=True``, options must be ``None`` so the
     orchestrator does not inject ``__options`` at all."""

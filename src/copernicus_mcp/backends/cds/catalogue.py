@@ -567,7 +567,15 @@ def search_groups(
                 if token in cat_l:
                     score += 2.0
                 # Membership match (capped) — secondary signal so
-                # huge groups don't drown axis relevance.
+                # huge groups don't drown axis relevance. Deliberately
+                # still the simple substring ``_record_matches`` (not the
+                # token-AND ``_record_matches_keyword`` used by search()):
+                # here ``token`` is already a single split word and this is
+                # only a tie-break weight on group ranking, not a
+                # dataset-level filter. Routing it through the richer
+                # keyword matcher would change reviewed group scores for no
+                # discovery benefit (T-CDS-KWFIX divergence; see
+                # the project decision log).
                 hits = sum(
                     1
                     for _, rec in members
@@ -621,6 +629,80 @@ def _record_matches(record: dict[str, Any], needle: str) -> bool:
     return needle.lower() in haystack
 
 
+def _record_matches_keyword(record: dict[str, Any], needle: str) -> bool:
+    """Token-AND keyword match (T-CDS-KWFIX).
+
+    Splits ``needle`` on whitespace and keeps the record when EVERY token
+    matches via :func:`_record_matches_variable` — i.e. the token is a
+    subset of some bundled-constraints ``variable`` name (Tier 1) OR a
+    word-boundary hit in the record's text surface (Tier 2: id + title +
+    description + keywords + summaries).
+
+    This replaces the previous single literal-substring test, which
+    returned 0 for any natural multi-word query whose words were not
+    contiguous in the prose — e.g. a smaller model typing
+    ``"2m air temperature"`` got 0 results and wrongly concluded the
+    keyword filter was broken, even though every word individually maps to
+    real temperature datasets. Word order no longer matters, and variable
+    names (which live in constraints, not the STAC prose) become
+    searchable.
+
+    Reusing :func:`_record_matches_variable` per token is deliberate: it
+    already does precision-first word-boundary matching, so ``"sea ice"``
+    does NOT match the ubiquitous "Copernicus Climate Change **Service**"
+    boilerplate (``ice`` ⊄ ``service`` at a word boundary) the way a naive
+    per-token substring would. An empty token set (whitespace/punctuation-
+    only needle, already coerced to ``None`` by the schema validator)
+    matches nothing."""
+    tokens = needle.split()
+    if not tokens:
+        return False
+    return all(_record_matches_variable(record, token) for token in tokens)
+
+
+def _keyword_relevance(record: dict[str, Any], needle: str) -> int:
+    """Rank a keyword match so the most on-topic datasets survive ``limit``.
+
+    A record only reaches here once it has already passed
+    ``_record_matches_keyword`` (every token matched). Token-AND matching
+    is deliberately broad — generic ERA5 prose satisfies ``air`` and
+    ``quality`` as *separate* tokens — so without ranking a query like
+    ``"air quality"`` would let dozens of reanalysis records (scanned
+    first, in snapshot order) fill ``limit`` and bury the real CAMS
+    air-quality datasets in the later-scanned ADS store (codex
+    T-CDS-KWFIX review). Tiers, highest first:
+
+      3 — the full query phrase is a contiguous substring of a
+          human-meaningful field (id / title / a keyword)
+      2 — the full phrase is a contiguous substring of the description
+      1 — matched only token-by-token (no contiguous phrase anywhere)
+
+    Within a tier the caller keeps snapshot order (stable sort), so this
+    only *promotes* exact-phrase hits; it never reshuffles equally-ranked
+    records."""
+    # Collapse internal whitespace runs the SAME way ``_record_matches_keyword``
+    # does (``str.split``), so ``"air  quality"`` / ``"air\tquality"`` score
+    # the exact-phrase tier against single-spaced titles instead of silently
+    # collapsing to tier 1 and re-burying the match (codex r2).
+    phrase = " ".join(needle.split()).lower()
+    if not phrase:
+        return 1
+    strong: list[str] = []
+    for field in ("id", "title"):
+        value = record.get(field)
+        if value:
+            strong.append(str(value))
+    keywords = record.get("keywords") or []
+    if isinstance(keywords, list):
+        strong.extend(str(k) for k in keywords)
+    if any(phrase in part.lower() for part in strong):
+        return 3
+    description = record.get("description")
+    if description and phrase in str(description).lower():
+        return 2
+    return 1
+
+
 def search(
     *,
     keyword: str | None = None,
@@ -635,8 +717,14 @@ def search(
     """Return slim catalogue records for the LLM to pick from.
 
     ``store=None`` combines all three stores. ``keyword=None`` returns
-    every record (subject to ``limit``). Filtering is substring match,
-    case-insensitive, against id + title + description + keywords.
+    every record (subject to ``limit``). ``keyword`` is a case-insensitive
+    token-AND match: the query is split on whitespace and a record is kept
+    when EVERY token matches its searchable surface — either as a
+    word-boundary hit in id + title + description + keywords + summaries,
+    or as a token-subset of the bundled constraints' ``variable`` enum. So
+    word order is irrelevant and ``keyword="2m temperature"`` finds ERA5
+    even though that phrase is not contiguous in the prose and the
+    variable name lives only in constraints (T-CDS-KWFIX).
 
     T-CDS-020 filters (all AND-combined with each other and with
     ``keyword``):
@@ -651,7 +739,11 @@ def search(
         summaries + id/title/description.
 
     Returns the slim shape ``{id, title, description, keywords, store}``.
-    Order is stable across calls (matches the bundled snapshot order).
+    Without ``keyword`` the order is the bundled snapshot order. With
+    ``keyword`` the results are relevance-ranked (exact-phrase hits in
+    id/title/keywords first, then description, then token-only matches),
+    snapshot order breaking ties — so a small ``limit`` keeps the most
+    on-topic datasets rather than whichever store is scanned first.
     """
     if store is not None and store not in _STORES:
         raise ValidationError(
@@ -681,9 +773,19 @@ def search(
     effective_limit = limit if limit is not None and limit > 0 else None
 
     out: list[dict[str, Any]] = []
+    # Keyword searches are relevance-ranked (see ``_keyword_relevance``)
+    # because token-AND matching is broad and ``limit`` truncation would
+    # otherwise bury exact-phrase hits behind generic per-token matches in
+    # whichever store is scanned first. We therefore collect ALL matches
+    # for the keyword path and sort before truncating, instead of the
+    # snapshot-order early-return used when no keyword is given.
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    order = 0
     for s in target_stores:
         for record in catalogue[s]:
-            if keyword is not None and not _record_matches(record, keyword):
+            if keyword is not None and not _record_matches_keyword(
+                record, keyword
+            ):
                 continue
             if bbox is not None and not _record_intersects_bbox(record, bbox):
                 continue
@@ -699,9 +801,22 @@ def search(
                 continue
             if category is not None and _record_category(record) != category:
                 continue
-            out.append(_slim_record(record, s))
+            slim = _slim_record(record, s)
+            if keyword is not None:
+                # Negate the tier so a plain ascending sort keeps the
+                # highest tier first while ``order`` preserves snapshot
+                # order within a tier (stable tie-break).
+                ranked.append((-_keyword_relevance(record, keyword), order, slim))
+                order += 1
+                continue
+            out.append(slim)
             if effective_limit is not None and len(out) >= effective_limit:
                 return out
+    if keyword is not None:
+        ranked.sort(key=lambda t: (t[0], t[1]))
+        out = [slim for _, _, slim in ranked]
+        if effective_limit is not None:
+            out = out[:effective_limit]
     return out
 
 
