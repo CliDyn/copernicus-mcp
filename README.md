@@ -181,7 +181,9 @@ Hierarchical discovery uses bundled JSON manifests (slim records → enriched ca
 
 ## Configuration
 
-The system runs out of the box. Override via env vars (`COPERNICUS_MCP_CACHE_DIR`, `COPERNICUS_MCP_LOG_LEVEL`, `COPERNICUS_MCP_ENABLED_BACKENDS=cmems,cds`), a YAML file at `~/.config/copernicus-mcp/config.yaml`, or `--cache-dir PATH` on the entry-point binary.
+The system runs out of the box. Override via env vars (`COPERNICUS_MCP_CACHE_DIR`, `COPERNICUS_MCP_STATE_DB`, `COPERNICUS_MCP_LOG_LEVEL`, `COPERNICUS_MCP_ENABLED_BACKENDS=cmems,cds`), a YAML file at `~/.config/copernicus-mcp/config.yaml`, or `--cache-dir PATH` on the entry-point binary.
+
+> **HPC / networked home directories:** the workflow-state SQLite database defaults to the user state directory, which on many clusters is NFS. The server detects a network filesystem and uses a safe journal mode automatically (with a loud, bounded fallback instead of a silent hang), but for per-run isolation you can also point `COPERNICUS_MCP_STATE_DB` at a node-local or per-run path. Keep it on a shared path if one process submits and another polls across nodes.
 
 Cache directories are per-OS via [`platformdirs`](https://platformdirs.readthedocs.io/): Linux `~/.cache/copernicus-mcp/`, macOS `~/Library/Caches/copernicus-mcp/`, Windows `%LOCALAPPDATA%\copernicus-mcp\Cache\`.
 

@@ -58,6 +58,12 @@ class StorageConfig(_Base):
     state_database: Path = Field(default_factory=_default_state_database)
     cache_size_limit_gb: float = 50.0
     cache_eviction_policy: Literal["lru"] = "lru"
+    # T-STATEDB-001: upper bound on each journal-mode open attempt of the
+    # state database. On a network home a stale WAL can make the open HANG
+    # (not error) until the MCP client's connect times out and the agent
+    # proceeds tool-less; this converts the hang into the DELETE-journal
+    # fallback chain and, at worst, a loud canonical error.
+    state_db_pragma_timeout_seconds: float = Field(default=15.0, gt=0.0)
 
     @field_validator("cache_directory", "state_database", mode="after")
     @classmethod
@@ -100,12 +106,13 @@ class BudgetPolicy(_Base):
     cds_confirm_on_unknown_size: bool = False
     # T-CDS-CHUNK (model B): when a CDS request exceeds the dataset's
     # server-side cost limit, the backend splits it into whole calendar units
-    # (year/month/day) and submits ALL parts at once as one logical multi-file
-    # workflow. The agent picks the granularity (``__options.chunk_by``); the MCP
-    # proposes and validates. CDS's per-user concurrent limit is undocumented and
-    # exceeding it only QUEUES the excess (it does not reject), so we submit
-    # everything and let CDS schedule — there is no inflight throttle. Instead,
-    # three fan-out guards (a large split is many jobs launched at once):
+    # (year/month/day) as one logical multi-file workflow. The agent picks the
+    # granularity (``__options.chunk_by``); the MCP proposes and validates.
+    # Submission is PACED (``cds_chunk_max_inflight`` below — the v2 "CDS
+    # queues any excess rather than rejecting it" premise was disproved by a
+    # live run: a 21-child burst tripped the per-user concurrency throttle and
+    # failed 39/42 children). On top of pacing, three fan-out guards (a large
+    # split is many jobs even when paced):
     #   - ``confirm_above``: a plan with > N chunks raises a ConfirmationRequired
     #     the agent satisfies with ``confirmed=true`` — putting a human in the loop.
     #   - ``reconfirm_above``: > N chunks demands a SECOND, deliberate confirmation
@@ -122,6 +129,43 @@ class BudgetPolicy(_Base):
     cds_auto_chunk_confirm_above: int = 30
     cds_auto_chunk_reconfirm_above: int = 100
     cds_auto_chunk_max_chunks: int = 366
+    # T-CDS-RESIL-002: bound on concurrently active (queued/running) children
+    # of a chunked parent. The first wave submits at most this many; the
+    # poll-driven refill tops the level back up as children reach a terminal
+    # state. 0 = unlimited (the old fan-out-everything behaviour). ~5 matches
+    # what the service tolerates empirically (field run 31); the real ceiling is
+    # undocumented and may differ per account, hence configurable.
+    cds_chunk_max_inflight: int = Field(default=5, ge=0)
+    # T-CDS-RESIL-003: bounded re-submission of a chunk whose child failed
+    # with the capacity signature (RESIL-001 classification, or an empty-log
+    # "unknown" later corroborated by a successful sibling). Same overrides,
+    # new child id, at most ``retry_limit`` times per chunk, spaced by
+    # ``retry_backoff_seconds`` (poll-driven — the wait is observed on the
+    # next poll after the window passes). Content failures are never retried:
+    # a malformed request that is retried is a slower way to fail. 0 disables
+    # retry (restores fail-fast).
+    cds_chunk_retry_limit: int = Field(default=3, ge=0)
+    cds_chunk_retry_backoff_seconds: float = Field(default=120.0, ge=0.0)
+    # T-CDS-MODEL-002: after downloading a result for a single-model-execution
+    # dataset (projections-cmip6 / CORDEX), verify the delivered archive
+    # actually contains the requested model before storing it under the cache
+    # key. The Rook backend has been observed delivering the FIRST model of a
+    # list silently; a poisoned cache entry would satisfy every future dedupe.
+    # Mismatch → the workflow fails with ``delivered_content_mismatch``.
+    cds_delivery_check_enabled: bool = True
+    # T-CDS-KEYCHECK-001: reject input keys the dataset's constraints snapshot
+    # does not list, at submit time. The server accepts unknown keys and
+    # silently ignores them — delivering the wrong selection, or failing
+    # minutes later with an empty log. Fail-open when a dataset has no
+    # snapshot entry; per-request escape hatch:
+    # ``__options.skip_input_validation=true``.
+    cds_input_key_validation: bool = True
+    # T-CDS-LICENCE-001: register the MCP-facing ``cds_accept_licence`` tool.
+    # Accepting a dataset licence legally binds the ACCOUNT owner, so the
+    # agent-visible surface is operator-opt-in (the operator "standing authorisation"
+    # model). The CLI ``cds accept-licence`` works regardless — the CLI is the
+    # operator. Listing licences is harmless and always registered.
+    cds_licence_accept_enabled: bool = False
     # T-CDS-ASYNC-DOWNLOAD: check_status spawns the result-file download and waits
     # at most this long for it inline. A fast / small file completes in one poll;
     # a large one exceeds the grace and finishes in the BACKGROUND (the poll
@@ -130,6 +174,14 @@ class BudgetPolicy(_Base):
     # this adds no delay to a quick download — it is only an upper bound. 0 =
     # always background.
     cds_download_inline_grace_seconds: float = Field(default=2.0, ge=0.0)
+    # T-CDS-DL-001: download results into a STABLE staging part keyed by the
+    # cache hash and resume it via HTTP Range (multiurl ``resume_transfers``)
+    # instead of restarting from byte zero on every poll. An interrupted
+    # transfer (client died, poll process exited) keeps its bytes; the next
+    # poll appends from where it stopped — without this a file larger than one
+    # grace-window of bytes can never land for an ephemeral poller. Off =
+    # per-attempt throwaway staging (pre-DL-001 behaviour).
+    cds_resume_downloads: bool = True
 
     @model_validator(mode="after")
     def _check_fanout_thresholds(self) -> BudgetPolicy:
@@ -150,6 +202,7 @@ class BudgetPolicy(_Base):
                 f"max_chunks={self.cds_auto_chunk_max_chunks}"
             )
         return self
+
 
 
 class ObservabilityConfig(_Base):

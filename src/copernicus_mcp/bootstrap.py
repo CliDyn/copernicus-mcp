@@ -44,7 +44,10 @@ _BACKEND_FACTORIES: dict[str, BackendFactory] = {}
 
 async def build_foundation(config: CopernicusMcpConfig) -> FoundationServices:
     """Construct and initialise the singleton foundation services."""
-    persistence = SqliteBackend(config.storage.state_database)
+    persistence = SqliteBackend(
+        config.storage.state_database,
+        pragma_timeout_seconds=config.storage.state_db_pragma_timeout_seconds,
+    )
     await persistence.initialise()
     # try/finally + success flag avoids ``except BaseException`` (forbidden by
     # the AST test in test_errors.py) while still closing the SQLite handle on

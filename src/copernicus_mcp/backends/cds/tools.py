@@ -14,9 +14,17 @@ canonical ``ErrorRecord`` content for ``isError=true`` MCP wire responses.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import asyncio
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from copernicus_mcp.data_model.schemas_cds import (
     CdsApplyConstraintsRequest,
@@ -129,11 +137,33 @@ class CdsSubmitRequestInput(CdsRetrieveRequest):
 
 
 class CdsCheckRequestStatusInput(BaseModel):
-    """User-facing inputs for the check-status tool."""
+    """User-facing inputs for the check-status tool. Exactly ONE of
+    ``request_id`` (single) or ``request_ids`` (batch, T-CDS-OPS-002)."""
 
     model_config = _FORBID_FROZEN
 
-    request_id: str = Field(min_length=1)
+    request_id: str | None = Field(default=None, min_length=1)
+    # Local review round (MEDIUM): ``min_length`` on the list constrains the
+    # LIST, so each element needs its own floor — ``[""]`` must fail exactly
+    # like ``request_id=""`` does in single mode.
+    request_ids: list[Annotated[str, StringConstraints(min_length=1)]] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Batch mode: poll several requests in one call (bounded "
+            "concurrency). Returns {results: [...], count} preserving input "
+            "order, with per-id errors inline — one bad id does not fail the "
+            "batch."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> CdsCheckRequestStatusInput:
+        if (self.request_id is None) == (self.request_ids is None):
+            raise ValueError(
+                "provide exactly one of request_id or request_ids"
+            )
+        return self
 
 
 class CdsDownloadRequestResultInput(BaseModel):
@@ -165,6 +195,38 @@ class CdsCancelRequestInput(BaseModel):
     model_config = _FORBID_FROZEN
 
     request_id: str = Field(min_length=1)
+
+
+class CdsListLicencesInput(BaseModel):
+    """User-facing inputs for ``cds_list_licences`` (T-CDS-LICENCE-001)."""
+
+    model_config = _FORBID_FROZEN
+
+    dataset_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional dataset id to route the call to the right store "
+            "(CDS / ADS / EWDS) — licence ids are per-store."
+        ),
+    )
+
+
+class CdsAcceptLicenceInput(BaseModel):
+    """User-facing inputs for ``cds_accept_licence`` (T-CDS-LICENCE-001)."""
+
+    model_config = _FORBID_FROZEN
+
+    licence_id: str = Field(min_length=1, description="Licence id from cds_list_licences.")
+    # Local review round (MEDIUM): strict — plain ``int`` would coerce
+    # ``revision=True`` to 1 before the backend's bool guard could see it;
+    # negative revisions fail fast here instead of on the live API.
+    revision: int = Field(
+        strict=True, ge=0, description="Licence revision from cds_list_licences."
+    )
+    dataset_id: str | None = Field(
+        default=None,
+        description="Optional dataset id for store routing (CDS / ADS / EWDS).",
+    )
 
 
 class ToolReturnedError(Exception):
@@ -307,7 +369,9 @@ async def cds_describe_dataset(
     call ``cds_apply_constraints(dataset_id, inputs={})`` for the LIVE
     server-side valid values verbatim — they are the canonical source
     of truth. Use ``cds_apply_constraints`` with a PARTIAL request to
-    progressively narrow the valid combinations.
+    progressively narrow the valid combinations — but note its caveats:
+    for some datasets the constraints response is a flat, non-narrowing
+    union, so the real submit is the decisive validator.
 
     Use this after ``cds_search_datasets`` to inspect required fields,
     licence, and constraints before submitting a request. The lookup is
@@ -353,6 +417,24 @@ async def cds_apply_constraints(
       response — that's the signal to drop those fields).
     - You want to confirm a dataset's required additional fields (e.g.
       EFAS v5.0 needs ``hydrological_model: [lisflood]``).
+
+    **Caveats (observed on live datasets — read before trusting the
+    response):**
+
+    - Some datasets return a NON-NARROWING flat union: ``valid_remaining``
+      echoes the full vocabulary no matter what you pin, and values
+      coupled to your selection may be silently omitted. Per-field
+      membership does NOT guarantee the combination is retrievable.
+    - Cross-field couplings (e.g. a spatial grid that only exists for
+      certain temporal aggregations) surface only when ALL related axes
+      are pinned TOGETHER. When probing whether a combination exists, pin
+      variable + product type + spatial + temporal + version in the same
+      call — narrowing one field at a time can pass on every step and
+      still fail at submit.
+    - This live endpoint and the bundled ``cds_describe_dataset``
+      snapshot can be different vintages; for vocabulary this endpoint
+      wins. Either way the REAL submit is the decisive validator — treat
+      a passing constraints probe as advisory, not as proof.
 
     Inputs:
       - dataset_id: CDS / ADS / EWDS dataset id.
@@ -435,6 +517,19 @@ async def cds_submit_request(
     ``TermsNotAcceptedError`` with ``recovery_url`` pointing at the
     licence page (T-CDS-006). Open the URL, accept the licence, and
     re-submit.
+
+    **Unknown input keys are rejected up front** (the server would
+    silently ignore them — wrong selection, or an empty-log failure
+    minutes later). Compose requests from ``cds_describe_dataset``'s
+    ``available_inputs``; ``__options.skip_input_validation=true``
+    bypasses the check if the bundled snapshot is stale.
+
+    **Multi-model requests on ``projections-cmip6`` and
+    ``projections-cordex-domains-single-levels`` always fan out** into
+    one part per model (those datasets execute ONE model per request
+    and silently deliver only the first of a list) — the response is
+    then a chunked parent, and each downloaded part is verified to
+    contain its requested model before caching.
 
     Inputs:
       - dataset_id: id from the catalogue (e.g.
@@ -544,7 +639,67 @@ async def cds_check_request_status(
     Outputs:
       - {status, request_id, submitted_at, updated_at, cache_key,
          error_details, result: {filepath?, uri, metadata, provenance}}.
+
+    **Chunked (auto-split) requests** answer with extra fields, because one
+    request id stands for many CDS jobs:
+
+    - ``progress: {completed, total}`` and ``chunks: {...}`` — per-state
+      counts that PARTITION the parts (``successful``, ``running``,
+      ``downloading``, ``retrying``, ``queued``, ``failed``, ``cancelled``),
+      so they sum to ``total``.
+    - ``per_chunk: [{index, request_id, status, phase?, attempt?}]`` — every
+      part that has been ORDERED is a first-class request id: poll it, or
+      resolve its file directly with ``cds_download_request_result(<that
+      id>)``. That works even when the parent as a whole failed. Parts not yet
+      ordered have ``request_id: null`` and status ``queued`` — there is
+      nothing to poll for those yet.
+    - ``phase: "downloading"`` on the parent — every remaining part has
+      finished server-side and only the local file transfers are left.
+      Transfers RESUME across polls and processes (an interrupted partial
+      file is continued, not restarted), so repeated polling does finish
+      them — but one long-running ``copernicus-mcp cds wait`` completes
+      the remaining transfers fastest, in a single uninterrupted pass.
+    - ``retrying`` parts are ones the server refused for capacity; they are
+      re-submitted automatically a bounded number of times. A part that failed
+      because the REQUEST is wrong is never retried.
+    - ``partial_result: {files, chunk_indices, missing_chunk_indices}`` on a
+      FAILED parent — the parts that did land, so paid-for data is never lost.
+      It is deliberately outside ``result``: a failed parent never presents
+      itself as a complete delivery.
+    - ``result.complete`` on a SUCCESSFUL parent — ``false`` means a part's
+      file has since been evicted from the cache, so the ``files`` list is
+      short; ``evicted_chunk_indices`` names the gaps and ``recovery_hint``
+      says how to refill them.
     """
+    if input.request_ids is not None:
+        # T-CDS-OPS-002: a 21-part window polled every 30 s over 10 h was
+        # ~18k separate invocations. Bounded concurrency — each poll can
+        # trigger a download grace, so an unbounded gather would thunder.
+        semaphore = asyncio.Semaphore(4)
+
+        async def _one(rid: str) -> dict[str, Any]:
+            async with semaphore:
+                envelope = await orchestrator.run(
+                    backend="cds",
+                    operation="poll",
+                    params={"request_id": rid},
+                )
+            if "error" in envelope and isinstance(envelope["error"], dict):
+                # Inline, never raising: one bad id must not fail the batch.
+                # Local review round (MEDIUM): the failed entry carries ITS
+                # id — correlating by list order alone forced callers to
+                # zip against their input, and ``request_id: null`` already
+                # means "not yet submitted" elsewhere in this API.
+                return {"request_id": rid, "error": envelope["error"]}
+            if "result" in envelope and isinstance(envelope["result"], dict):
+                return envelope["result"]
+            return envelope
+
+        results = await asyncio.gather(
+            *(_one(rid) for rid in input.request_ids)
+        )
+        return {"results": list(results), "count": len(results)}
+
     out: dict[str, Any] = await orchestrator.run(
         backend="cds",
         operation="poll",
@@ -616,10 +771,70 @@ async def cds_cancel_request(
     return _unwrap(out)
 
 
+async def cds_list_licences(
+    input: CdsListLicencesInput,
+    *,
+    orchestrator: WorkflowOrchestrator,
+) -> dict[str, Any]:
+    """List the store's dataset licences and which ones this account has
+    already accepted.
+
+    Use when a submit fails with ``TermsNotAcceptedError``: compare the
+    ``available`` and ``accepted`` sets to find the missing licence and its
+    ``revision``. Accepting happens on the licence web page (the error's
+    ``recovery_url``), or — when the operator has enabled it — in-band via
+    ``cds_accept_licence``.
+
+    Inputs:
+      - dataset_id (optional): routes to the dataset's store; licence ids
+        are per-store (CDS / ADS / EWDS).
+
+    Outputs:
+      - {store, available: [{id, revision, label, scope, contents_url}],
+         accepted: [...same shape...]}.
+    """
+    out: dict[str, Any] = await orchestrator.run(
+        backend="cds",
+        operation="list_licences",
+        params=input.model_dump(),
+    )
+    return _unwrap(out)
+
+
+async def cds_accept_licence(
+    input: CdsAcceptLicenceInput,
+    *,
+    orchestrator: WorkflowOrchestrator,
+) -> dict[str, Any]:
+    """Accept a dataset licence in-band, under the operator's standing
+    authority.
+
+    **Acceptance legally binds the account owner.** This tool is registered
+    only when the operator set ``budget.cds_licence_accept_enabled`` — its
+    presence IS the authorisation. Get the ``licence_id`` and ``revision``
+    from ``cds_list_licences`` (or from the ``TermsNotAcceptedError``
+    context), accept, then re-submit the original request.
+
+    Inputs:
+      - licence_id, revision: from ``cds_list_licences``.
+      - dataset_id (optional): store routing.
+
+    Outputs:
+      - {accepted: true, licence_id, revision, store, note}.
+    """
+    out: dict[str, Any] = await orchestrator.run(
+        backend="cds",
+        operation="accept_licence",
+        params=input.model_dump(),
+    )
+    return _unwrap(out)
+
+
 def register_cds_tools(
     server: Any,
     *,
     orchestrator: WorkflowOrchestrator,
+    licence_accept_enabled: bool = False,
 ) -> None:
     """Register all seven CDS tools on a FastMCP-compatible server.
 
@@ -693,6 +908,25 @@ def register_cds_tools(
         return await cds_download_request_result(
             input, orchestrator=orchestrator
         )
+
+    @server.tool(  # type: ignore[untyped-decorator]
+        name=cds_list_licences.__name__,
+        description=cds_list_licences.__doc__,
+    )
+    async def _list_licences(input: CdsListLicencesInput) -> dict[str, Any]:
+        return await cds_list_licences(input, orchestrator=orchestrator)
+
+    # T-CDS-LICENCE-001: the accept tool is registered ONLY under the
+    # operator's explicit opt-in — its presence on the tool surface is the
+    # standing authorisation. The CLI equivalent is always available.
+    if licence_accept_enabled:
+
+        @server.tool(  # type: ignore[untyped-decorator]
+            name=cds_accept_licence.__name__,
+            description=cds_accept_licence.__doc__,
+        )
+        async def _accept_licence(input: CdsAcceptLicenceInput) -> dict[str, Any]:
+            return await cds_accept_licence(input, orchestrator=orchestrator)
 
     @server.tool(  # type: ignore[untyped-decorator]
         name=cds_cancel_request.__name__,

@@ -190,7 +190,7 @@ def test_calibration_miss_is_unknown() -> None:
     assert out["estimated_size_bytes"] is None
 
 
-def test_wp3_case_a_calibrated_to_actual_size() -> None:
+def test_field_case_a_calibrated_to_actual_size() -> None:
     """XCO2 whole-file: one observation of 62.7 MB at cost 1 → estimate == 62.7
     MB, and the cost==1 demotion is overridden by the calibration entry."""
     costing = CostingResult(units=1.0, limit=10000.0)
@@ -200,7 +200,7 @@ def test_wp3_case_a_calibrated_to_actual_size() -> None:
     assert out["estimated_size_bytes"] == 62_751_933
 
 
-def test_wp3_case_b_cordex_unknown_when_uncalibrated() -> None:
+def test_field_case_b_cordex_unknown_when_uncalibrated() -> None:
     """CORDEX whole-file (cost==1, single field): no confident 3.8 MB — honest
     'unknown' until calibrated (vs the old curated-4MB under-estimate)."""
     costing = CostingResult(units=1.0, limit=1_000_000.0)
@@ -214,7 +214,7 @@ def test_wp3_case_b_cordex_unknown_when_uncalibrated() -> None:
     assert out["epistemic_status"] == "unknown"
 
 
-def test_wp3_case_d_cost_exceeds_limit_flagged() -> None:
+def test_field_case_d_cost_exceeds_limit_flagged() -> None:
     """Daily-stats 5yr: costing exceeds the limit; the estimate surfaces it so
     submit can reject pre-flight (full submit-path test in test_cds_submit_*)."""
     costing = CostingResult(units=1827.0, limit=400.0)
@@ -227,7 +227,7 @@ def test_wp3_case_d_cost_exceeds_limit_flagged() -> None:
     assert out["cost"]["exceeds_limit"] is True
 
 
-def test_wp3_case_c_cmip6_seed_only_is_approximate() -> None:
+def test_field_case_c_cmip6_seed_only_is_approximate() -> None:
     """A seed-only estimate (no LOCAL observations) is now SHOWN but clearly marked
     ``approximate`` — the clean global-only seed gives a rough out-of-the-box number,
     and the loud ``size_estimate_caveat`` warns it can be off by a large factor. A

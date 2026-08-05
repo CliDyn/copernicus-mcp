@@ -21,6 +21,13 @@ _ENV_VAR_MAP: dict[str, tuple[str, ...]] = {
     "COPERNICUS_MCP_LOG_LEVEL": ("server", "log_level"),
     "COPERNICUS_MCP_CACHE_DIR": ("storage", "cache_directory"),
     "COPERNICUS_MCP_STATE_DB": ("storage", "state_database"),
+    "COPERNICUS_MCP_CDS_CHUNK_MAX_INFLIGHT": ("budget", "cds_chunk_max_inflight"),
+    "COPERNICUS_MCP_CDS_CHUNK_RETRY_LIMIT": ("budget", "cds_chunk_retry_limit"),
+    "COPERNICUS_MCP_CDS_CHUNK_RETRY_BACKOFF_SECONDS": (
+        "budget",
+        "cds_chunk_retry_backoff_seconds",
+    ),
+    "COPERNICUS_MCP_CDS_RESUME_DOWNLOADS": ("budget", "cds_resume_downloads"),
 }
 
 

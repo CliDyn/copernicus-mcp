@@ -455,6 +455,14 @@ copernicus-mcp cds download <parent_id> --json # lists one file descriptor per c
 
 `cds wait` / `cds download` / `cds cancel` operate on the parent `request_id` transparently. `download` on a chunked parent prints the descriptor set (one file per chunk, ordered by chunk index) with a `merge_hint` — the CLI never recombines the parts.
 
+While it waits, `cds wait` prints a live progress line whose states partition the parts:
+
+```text
+parts: 3/21 done (running 2, downloading 1, retrying 1, queued 14)
+```
+
+`downloading` is a part whose server-side job is finished and whose file is transferring; `retrying` is a part the Climate Data Store refused because it was busy, which is re-submitted automatically. Parts are submitted a few at a time rather than all at once, so a large split completes over several waves — a slowly-advancing count is expected, not a stall. See the pacing knobs in `docs/setup.md`.
+
 A large split asks for confirmation: more than `budget.cds_auto_chunk_confirm_above` parts (default 30) prints a confirmation prompt; more than `cds_auto_chunk_reconfirm_above` (default 100) is a heavier batch that prompts a second time. At the CLI a single `--yes` (or one interactive confirm) covers both tiers — the repeat gate exists for the agent path, where the model must escalate to a human. Over `cds_auto_chunk_max_chunks` (default 366) the request is rejected; raise that config to allow a bigger fan-out.
 
 ### T&C errors

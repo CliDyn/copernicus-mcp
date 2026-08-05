@@ -96,7 +96,9 @@ def _fake_creds():
 def _good_params() -> dict[str, Any]:
     return {
         "dataset_id": "cams-global-reanalysis-eac4",
-        "inputs": {"variable": ["x"], "year": ["2024"]},
+        # T-CDS-KEYCHECK-001: keys must be ones the dataset actually accepts
+        # (eac4 is date-based; a `year` key is now rejected before submit).
+        "inputs": {"variable": ["x"], "date": "2024-01-01/2024-01-01"},
     }
 
 

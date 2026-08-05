@@ -28,6 +28,9 @@ class WorkflowRecord(TypedDict):
     # valid; ``_row_to_workflow`` always populates them from the DB.
     parent_request_id: NotRequired[str | None]
     chunk_plan_json: NotRequired[str | None]
+    # T-CDS-RESIL-006: monotonic CAS counter for plan writes; bumped by every
+    # committed ``update_chunk_plan``. Always populated from the DB.
+    chunk_plan_version: NotRequired[int]
 
 
 class ProvenanceRecord(TypedDict):
@@ -100,8 +103,12 @@ class PersistenceBackend(Protocol):
         limit: int = 50,
     ) -> list[WorkflowRecord]: ...
     async def update_chunk_plan(
-        self, request_id: str, chunk_plan_json: str
-    ) -> None: ...
+        self,
+        request_id: str,
+        chunk_plan_json: str,
+        *,
+        expected_version: int | None = None,
+    ) -> bool: ...
 
     # T-CDS-EST2-003: size calibration observations.
     async def record_size_observation(

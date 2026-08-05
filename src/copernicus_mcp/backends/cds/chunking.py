@@ -11,12 +11,31 @@ limit. ``propose_chunks`` is pure; the async per-chunk validation lives in
 from __future__ import annotations
 
 import calendar
-from collections.abc import Awaitable, Callable
+import itertools
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 _GRANULARITY_ORDER: tuple[str, ...] = ("year", "month", "day")
+
+# T-CDS-MODEL-001: dataset families whose backend executes ONE model per
+# request while the constraints endpoint accepts a list. Requesting several
+# silently delivers only the FIRST — no error, no per-model status (field run 19
+# for CMIP6, confirmed by a controlled cdsapi probe; CORDEX confirmed live in
+# spike T-CDS-MODEL-000: 2 RCMs requested, 1 delivered, status successful).
+# A multi-model request on these datasets therefore ALWAYS fans out into one
+# child per combination of the listed axes — the loss is semantic, not size.
+# CORDEX carries TWO model axes (driving GCM × RCM); the proposal is the
+# cartesian product of whichever registered axes are multi-valued, and the
+# GCM↔RCM coupling is validated per child by live costing/submit.
+# Conservative: SIS derived products (sis-*-cmip6) also carry a model axis but
+# have no evidence of this behaviour — gate them only on evidence; the
+# delivered-content check (T-CDS-MODEL-002) is the safety net meanwhile.
+SINGLE_MODEL_EXECUTION_AXES: dict[str, tuple[str, ...]] = {
+    "projections-cmip6": ("model",),
+    "projections-cordex-domains-single-levels": ("gcm_model", "rcm_model"),
+}
 
 
 def _axis_list(inputs: dict[str, Any], axis: str) -> list[Any] | None:
@@ -97,6 +116,44 @@ def apply_chunk(inputs: dict[str, Any], chunk: dict[str, Any]) -> dict[str, Any]
     return child
 
 
+_CALENDAR_AXES: tuple[str, ...] = ("year", "month", "day")
+
+
+def sibling_corroborates(
+    entry: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    statuses: Mapping[str, str],
+) -> bool:
+    """Does a SUCCESSFUL sibling chunk corroborate a capacity suspicion for
+    ``entry``? Only when it shares every NON-CALENDAR override: a successful
+    model-A chunk proves the shared shape works for model A's calendar slices,
+    not that model B (or another GCM×RCM pair) is valid at all — so
+    cross-model success must never promote an empty-log failure to retryable
+    (review M3; content failures are never retried). Calendar-only plans have
+    empty non-calendar overrides everywhere, so every sibling still
+    corroborates — the original Phase-1 rule is preserved exactly there."""
+
+    def _non_calendar(overrides: Any) -> dict[str, Any]:
+        if not isinstance(overrides, dict):
+            return {}
+        return {k: v for k, v in overrides.items() if k not in _CALENDAR_AXES}
+
+    mine = _non_calendar(entry.get("overrides"))
+    entry_cid = entry.get("child_request_id")
+    for chunk in chunks:
+        cid = chunk.get("child_request_id")
+        # Identity AND id equality: the same-parse identity contract is
+        # fragile (round-2 LOW) — an entry COPY must not let a chunk
+        # corroborate itself through its own child id.
+        if chunk is entry or (cid and cid == entry_cid):
+            continue
+        if not cid or statuses.get(cid) != "successful":
+            continue
+        if _non_calendar(chunk.get("overrides")) == mine:
+            return True
+    return False
+
+
 def compute_parent_status(
     plan: dict[str, Any], child_status_by_id: dict[str, str]
 ) -> str:
@@ -106,7 +163,11 @@ def compute_parent_status(
     Precedence ``failed > cancelled(stopped) > cancelled-child > successful >
     running > queued``:
       - any child terminally ``failed`` → ``failed`` (a real failure outranks a
-        concurrent cancel; remaining chunks stop);
+        concurrent cancel; remaining chunks stop) — EXCEPT a chunk flagged
+        ``retry_pending`` (T-CDS-RESIL-003): its failure is capacity-classified
+        and a bounded re-submission is still owed, so the chunk counts as
+        active (``running``) — a parent is not terminal while any of its
+        chunks is still retryable;
       - else the ``stopped`` flag (user cancel cascaded) → ``cancelled``;
       - else any child terminally ``cancelled`` *without* a parent cancel (e.g.
         CDS dismissed it, or the child id was cancelled directly) → ``failed``:
@@ -120,7 +181,12 @@ def compute_parent_status(
     non-terminal, so it never promotes the parent to ``successful``."""
     chunks = plan.get("chunks", [])
     submitted = [c for c in chunks if c.get("child_request_id")]
-    statuses = [child_status_by_id.get(c["child_request_id"]) for c in submitted]
+    statuses = []
+    for c in submitted:
+        s = child_status_by_id.get(c["child_request_id"])
+        if s == "failed" and c.get("retry_pending"):
+            s = "running"  # failed-but-retryable masks as active (RESIL-003)
+        statuses.append(s)
     if any(s == "failed" for s in statuses):
         return "failed"
     if plan.get("stopped"):
@@ -214,6 +280,46 @@ def is_splittable(inputs: dict[str, Any]) -> bool:
     return max(proposable_chunk_counts(inputs).values(), default=0) >= 2
 
 
+def propose_model_chunks(
+    inputs: dict[str, Any], axes: tuple[str, ...]
+) -> list[dict[str, Any]] | None:
+    """One override per combination of the MULTI-VALUED registered model axes
+    (T-CDS-MODEL-001). Axes that are scalar or single-element lists stay in
+    the parent request untouched. ``None`` when nothing fans out."""
+    multi = [
+        (axis, list(dict.fromkeys(inputs[axis])))  # dedupe, order-preserving
+        for axis in axes
+        if isinstance(inputs.get(axis), list) and len(inputs[axis]) > 1
+    ]
+    multi = [(axis, values) for axis, values in multi if len(values) > 1]
+    if not multi:
+        return None
+    axis_names = [axis for axis, _ in multi]
+    return [
+        {axis: [value] for axis, value in zip(axis_names, combo, strict=True)}
+        for combo in itertools.product(*(values for _, values in multi))
+    ]
+
+
+def model_tokens_outside_vocabulary(
+    overrides: list[dict[str, Any]], vocabulary: dict[str, set[str]]
+) -> list[str]:
+    """Model tokens in the proposed overrides that the dataset's known
+    vocabulary does not contain (invariant-2 parity with the calendar-token
+    guard: overrides are persisted verbatim in ``chunk_plan_json``, so a
+    non-vocabulary — e.g. credential-shaped — value must refuse the split,
+    never be persisted). The check is fail-CLOSED: an axis with no vocabulary
+    marks all its tokens bad."""
+    bad: list[str] = []
+    for override in overrides:
+        for axis, values in override.items():
+            known = vocabulary.get(axis)
+            for value in values:
+                if not isinstance(value, str) or known is None or value not in known:
+                    bad.append(str(value))
+    return bad
+
+
 @dataclass(frozen=True)
 class ChunkSpec:
     """One validated chunk: the request-input overrides plus the live cost units
@@ -234,11 +340,15 @@ class ChunkPlan:
 
 class ChunkPlanError(Exception):
     """No usable chunk plan. ``reason`` is one of: ``not_splittable``,
-    ``too_many_chunks``, ``costing_unavailable``, ``exceeds_at_finest``."""
+    ``too_many_chunks``, ``costing_unavailable``, ``exceeds_at_finest``,
+    ``invalid_model_combination``. ``detail`` optionally carries a
+    caller-presentable elaboration (e.g. which model combination failed
+    costing) — built from vocabulary-validated tokens only."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, detail: str | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.detail = detail
 
 
 async def build_chunk_plan(
@@ -287,3 +397,132 @@ async def build_chunk_plan(
             )
         # Some whole unit is still over the limit → escalate to the finer axis.
     raise ChunkPlanError("exceeds_at_finest" if proposed_any else "not_splittable")
+
+
+async def build_model_chunk_plan(
+    inputs: dict[str, Any],
+    model_overrides: list[dict[str, Any]],
+    *,
+    cost_limit: float | None,
+    chunk_by: str,
+    costing_fn: Callable[[dict[str, Any]], Awaitable[float | None]],
+    max_chunks: int = 366,
+) -> ChunkPlan:
+    """Compose the model fan-out with the calendar escalation
+    (T-CDS-MODEL-001): one child per model combination; a per-model child
+    whose live cost exceeds ``cost_limit`` is further calendar-split and its
+    sub-chunks carry BOTH the model and the calendar override.
+
+    The model split is SEMANTIC — it must happen even when cost information is
+    missing — so unlike ``build_chunk_plan`` an unavailable costing does not
+    fail the plan: the child is kept whole with ``units: 0.0`` and an
+    over-limit child falls back to the submit-time 403 (which also covers
+    CORDEX, whose paired ``start_year``/``end_year`` blocks are not calendar
+    axes the splitter knows). ``granularity`` is ``"model"`` or
+    ``"model+<axis>"`` when any child was calendar-split."""
+    chunks: list[ChunkSpec] = []
+    sub_granularities: set[str] = set()
+    costed: list[tuple[dict[str, Any], float | None]] = []
+    for override in model_overrides:
+        child_inputs = apply_chunk(inputs, override)
+        units = await costing_fn(child_inputs)
+        costed.append((override, units))
+        if (
+            units is not None
+            and cost_limit is not None
+            and cost_limit > 0
+            and units > cost_limit
+        ):
+            try:
+                # Invariant-2 parity with the cost branch (review, local M2):
+                # calendar overrides are persisted verbatim, so a sub-split is
+                # allowed only over clean calendar tokens — a garbage (e.g.
+                # credential-shaped) year value refuses the plan instead of
+                # riding a per-chunk costing that happens to tolerate it.
+                if not calendar_axes_clean(child_inputs):
+                    raise ChunkPlanError("not_splittable")
+                subplan = await build_chunk_plan(
+                    child_inputs,
+                    cost_limit,
+                    chunk_by,
+                    costing_fn=costing_fn,
+                    max_chunks=max_chunks,
+                )
+            except ChunkPlanError as exc:
+                if exc.reason == "not_splittable":
+                    # No calendar axis to sub-split (the CORDEX shape) and the
+                    # child is KNOWN over the limit — submitting it would burn
+                    # a job slot on a guaranteed 403 (review M2: the normal
+                    # cost branch refuses this pre-flight; the model path must
+                    # not be laxer). Only a child with UNKNOWN cost rides the
+                    # 403 fallback.
+                    raise ChunkPlanError("exceeds_at_finest") from exc
+                raise
+            sub_granularities.add(subplan.granularity)
+            for spec in subplan.chunks:
+                chunks.append(
+                    ChunkSpec(
+                        overrides={**override, **spec.overrides},
+                        units=spec.units,
+                    )
+                )
+        elif units is not None:
+            chunks.append(ChunkSpec(overrides=dict(override), units=units))
+        # A ``None`` costing is deferred: judged after the loop (retry, then
+        # invalid-combination vs systemic-outage decision).
+        if len(chunks) > max_chunks:
+            raise ChunkPlanError("too_many_chunks")
+    # Review, local M5: costing answering for SOME combos but not others is
+    # the signature of an invalid model combination (a GCM×RCM pair that never
+    # ran) — submitting it whole would 400 at submit time and the first-wave
+    # abort would cancel every valid sibling. Refuse pre-flight, naming the
+    # combination (tokens are vocabulary-validated upstream, safe to echo).
+    # When costing failed for EVERYTHING the outage is systemic, not
+    # combination-specific: the split still happens (the loss is semantic) and
+    # the submit-time 403 stays the backstop.
+    failed = [ov for ov, u in costed if u is None]
+    if failed and len(failed) < len(costed):
+        # Round-2 review (local): ``fetch_costing`` returns ``None`` for ANY
+        # failure — timeout, 5xx, burst throttling — not only "combination
+        # does not exist", and the model fan-out fires N costings in a burst.
+        # Re-cost the failures once before judging, or a single blip would
+        # produce a refusal whose guidance makes the agent drop a VALID model
+        # — the exact silent loss this feature prevents, laundered through a
+        # validation error.
+        still_failed: list[dict[str, Any]] = []
+        for override in failed:
+            retry_units = await costing_fn(apply_chunk(inputs, override))
+            if retry_units is None:
+                still_failed.append(override)
+            else:
+                chunks.append(
+                    ChunkSpec(overrides=dict(override), units=retry_units)
+                )
+        if still_failed:
+            names = ", ".join(
+                "×".join(str(v[0]) for v in ov.values()) for ov in still_failed
+            )
+            raise ChunkPlanError(
+                "invalid_model_combination",
+                detail=(
+                    f"The costing pre-flight repeatedly failed for {names} "
+                    "while other combinations costed normally. Either a "
+                    "transient costing outage — resubmit the same request to "
+                    "rule that out — or a combination that does not exist; "
+                    "submit it alone to see the server's own error. Do not "
+                    "silently drop a model you need."
+                ),
+            )
+    elif failed:
+        # EVERY combination failed to cost: a systemic outage, not a bad
+        # pair. The split still happens (the loss is semantic; spike §5) with
+        # unknown units — the submit-time 403 is the backstop.
+        for override in failed:
+            chunks.append(ChunkSpec(overrides=dict(override), units=0.0))
+    if len(chunks) > max_chunks:
+        raise ChunkPlanError("too_many_chunks")
+    granularity = "model"
+    if sub_granularities:
+        ordered = [g for g in _GRANULARITY_ORDER if g in sub_granularities]
+        granularity = "model+" + "/".join(ordered or sorted(sub_granularities))
+    return ChunkPlan(granularity=granularity, chunks=chunks)

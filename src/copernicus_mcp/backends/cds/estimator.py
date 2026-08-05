@@ -273,7 +273,7 @@ def estimate(
 
         cal_result = calibration.resolve(dataset_id, signature(inputs))
 
-    # v2 honesty (WP3 live-test directive): show a byte size ONLY when it is
+    # v2 honesty (live-test decision): show a byte size ONLY when it is
     # backed by your own prior downloads of this request shape (a calibration
     # result with ≥1 LOCAL observation). The bundled seed / curated map /
     # cross-signature median proved unreliable — a 15×-off number that was falsely

@@ -24,7 +24,10 @@ import copy
 import json
 import math
 import re
+import threading
+import time
 import uuid
+import zipfile
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,19 +35,35 @@ from typing import Any, Final, cast
 
 import httpx
 
+try:
+    # multiurl is a pinned transitive dependency of ``cdsapi`` — the SDK's own
+    # ``Results._download`` drives it with ``resume_transfers=True`` (spike
+    # T-CDS-DL-000). Guarded so importing this module still succeeds in
+    # environments without the ``cds`` extra (matches the lazy ``cdsapi``
+    # import); resume quietly degrades to the throwaway-staging path then.
+    import multiurl
+except ImportError:  # pragma: no cover - cds extra not installed
+    multiurl = None  # type: ignore[assignment]
+
 from copernicus_mcp.auth.cds import CdsApiKeyAdapter
 from copernicus_mcp.auth.resolver import ResolvedCredentials
 from copernicus_mcp.backends.abstract import AbstractBackend, FoundationServices
 from copernicus_mcp.backends.cds import catalogue as _catalogue
 from copernicus_mcp.backends.cds import estimator as _estimator
+from copernicus_mcp.backends.cds.capacity import classify_remote_failure
 from copernicus_mcp.backends.cds.chunking import (
+    SINGLE_MODEL_EXECUTION_AXES,
     ChunkPlan,
     ChunkPlanError,
     apply_chunk,
     build_chunk_plan,
+    build_model_chunk_plan,
     compute_parent_status,
     granularity_estimates,
     is_splittable,
+    model_tokens_outside_vocabulary,
+    propose_model_chunks,
+    sibling_corroborates,
 )
 from copernicus_mcp.backends.cds.costing import fetch_costing
 from copernicus_mcp.data_model.provenance import (
@@ -276,6 +295,86 @@ def _iso_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _unknown_input_keys(
+    dataset_id: str, inputs: Mapping[str, Any]
+) -> list[str] | None:
+    """Input keys the dataset's constraints snapshot does not list
+    (T-CDS-KEYCHECK-001), sorted; ``None`` when the dataset has no usable
+    snapshot entry (fail open — a stale snapshot must never block a valid
+    request). The snapshots include adaptor keys (``area``, ``data_format``,
+    ``download_format``, ``date``, ``hyear``, …) for the datasets that
+    genuinely accept them, so plain set membership is the correct test —
+    verified against ten known-good request shapes across CDS/ADS/EWDS."""
+    accepted = _catalogue.accepted_input_keys(dataset_id)
+    if accepted is None:
+        return None
+    return sorted(k for k in inputs if k not in accepted)
+
+
+def _normalise_model_token(token: str) -> str:
+    """Fold a model identifier for comparison: requested tokens are lowercase
+    snake (``knmi_racmo22e``), delivered member names mixed case with hyphens
+    (``KNMI-RACMO22E``) — verified on a live CORDEX delivery (spike
+    T-CDS-MODEL-000). Lowercase, drop ``-``/``_``."""
+    return token.lower().replace("-", "").replace("_", "")
+
+
+def _missing_model_tokens(
+    path: Path, inputs: Mapping[str, Any], axes: tuple[str, ...]
+) -> list[str] | None:
+    """Requested model tokens (per registered axis) that the delivered archive
+    does NOT contain (T-CDS-MODEL-002). ``None`` when the check does not apply:
+    a non-zip delivery (our staged filename carries no model), an unreadable
+    zip, or a zip with no ``.nc`` members (Rook adds ``provenance.json`` /
+    ``provenance.png`` to every archive — those never carry model names). The
+    checker must never be a new failure mode for valid data; anything it
+    cannot judge it declines to judge."""
+    if path.suffix.lower() != ".zip":
+        return None
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = [
+                name for name in archive.namelist() if name.lower().endswith(".nc")
+            ]
+    except (zipfile.BadZipFile, OSError):
+        return None
+    if not members:
+        return None
+    # CMOR/CORDEX filenames are ``_``-segmented with the model as its own
+    # segment; matching whole segments (not substrings) keeps a delivered
+    # ``EC-Earth3-Veg`` from satisfying a request for ``ec_earth3``.
+    member_segments = {
+        _normalise_model_token(segment)
+        for member in members
+        for segment in Path(member).stem.split("_")
+    }
+    missing: list[str] = []
+    for axis in axes:
+        value = inputs.get(axis)
+        tokens = value if isinstance(value, list) else [value] if value else []
+        for token in tokens:
+            if not isinstance(token, str):
+                continue
+            needle = _normalise_model_token(token)
+            if needle and needle not in member_segments:
+                missing.append(token)
+    return missing
+
+
+def _seconds_between(start_iso: Any, end_iso: str) -> float | None:
+    """Elapsed seconds between two ``_iso_now``-style timestamps, or ``None``
+    when either fails to parse. ``None`` never satisfies a backoff on the spot;
+    the retry caller restarts the window from now instead, so an unparseable
+    stamp delays a resubmit rather than either triggering one early or parking
+    the chunk forever."""
+    try:
+        start = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return (end - start).total_seconds()
+
+
 def _new_request_id() -> str:
     return uuid.uuid4().hex
 
@@ -485,6 +584,169 @@ def _cds_sniff_extension(path: Path) -> str | None:
     return None
 
 
+# T-CDS-OPS-001: one page of the account's active remote jobs is enough for
+# operator reporting; a page filled to this limit is flagged ``truncated``.
+_ACTIVE_JOBS_PAGE_LIMIT: Final[int] = 100
+
+# T-CDS-DL-001: abandoned resume parts older than this are swept lazily on the
+# next resumable download. Long enough that a weekend-long outage doesn't cost
+# the accumulated bytes; short enough that dead requests don't pin disk.
+_RESUME_PART_STALE_SECONDS: Final[float] = 7 * 86400.0
+
+
+def _sweep_stale_parts(
+    staging_root: Path, *, keep: frozenset[str] = frozenset()
+) -> None:
+    """Best-effort removal of resume parts nobody will finish (>7 days idle).
+
+    ``keep`` lists part paths with a LIVE in-process writer (review round 2,
+    codex LOW): a stalled-but-alive transfer must never have its file swept
+    out from under the open fd, however old the mtime."""
+    try:
+        candidates = [
+            *staging_root.glob("*.part"),
+            *staging_root.glob("*.part.meta.json"),
+        ]
+    except OSError:
+        return
+    cutoff = time.time() - _RESUME_PART_STALE_SECONDS
+    for path in candidates:
+        if str(path) in keep or str(path).removesuffix(".meta.json") in keep:
+            continue
+        with contextlib.suppress(OSError):
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+
+
+def _part_basename(request_id: str) -> str:
+    """Stable, filesystem-safe part filename keyed by the REQUEST id.
+
+    Review round 1 (codex HIGH-1): keyed by request, NOT by cache key — two
+    workflow rows sharing a cache_key (force_refresh) are different remote
+    jobs with different result objects, and their concurrent finalises must
+    never append to the same file. The request id is stable across polls and
+    processes, which is all resume needs."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", request_id) + ".part"
+
+
+def _validate_or_reset_part(
+    part: Path, meta: Path, expected_size: int, location: str
+) -> None:
+    """Keep an existing part only if its meta sidecar pins the SAME expected
+    size AND the same result URL — equal size is not identity (review round 1,
+    codex HIGH-2): a regenerated result can be byte-different at the same
+    length, and appending to the old prefix would store a corrupt hybrid. Also
+    discards a part that somehow grew past the expected size (corrupt; Range
+    resume could never finish it). Always (re)writes the sidecar for the
+    object we are about to download."""
+    if part.exists():
+        size_ok = False
+        location_ok = False
+        try:
+            recorded = json.loads(meta.read_text())
+            size_ok = recorded.get("expected_size") == expected_size
+            location_ok = recorded.get("location") == location
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            oversized = part.stat().st_size > expected_size
+        except OSError:
+            oversized = True
+        if not size_ok or not location_ok or oversized:
+            with contextlib.suppress(OSError):
+                part.unlink()
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(
+        json.dumps({"expected_size": expected_size, "location": location})
+    )
+
+
+def _resumable_download(url: str, part: Path, expected_size: int) -> None:
+    """Transfer ``url`` into ``part``, appending from its current byte count.
+
+    multiurl implements the append via an HTTP Range request when the target
+    already exists (``resume_transfers``) — the exact machinery the SDK's own
+    download path enables (spike T-CDS-DL-000); we call it directly because the
+    SDK's ``Results.download`` deletes the target first. Runs in a worker
+    thread (blocking I/O). A transfer that ENDS at the wrong size is corrupt —
+    raise so the caller fails the row and discards the part rather than
+    promoting garbage into the cache."""
+    multiurl.download(url, target=str(part), stream=True, resume_transfers=True)
+    try:
+        actual = part.stat().st_size
+    except OSError:
+        actual = -1
+    if actual != expected_size:
+        raise OSError(
+            f"download ended at {actual} bytes, expected {expected_size}"
+        )
+
+
+def _fetch_results_handle(inner_client: Any, request_id: str) -> Any:
+    """Blocking: resolve the Results handle (result URL + expected size) for a
+    completed remote job. Runs in a worker thread."""
+    return inner_client.get_remote(request_id).get_results()
+
+
+# Review round 3 (codex MEDIUM): daemonising dropped the default executor's
+# worker cap. At most this many transfers run concurrently per backend;
+# excess daemon threads idle on the semaphore (cheap) instead of opening
+# unbounded sockets/file handles during a large batch poll.
+_MAX_CONCURRENT_TRANSFERS: Final[int] = 4
+
+
+def _spawn_daemon_transfer(
+    location: str,
+    part: Path,
+    expected_size: int,
+    slots: threading.Semaphore,
+) -> asyncio.Future[None]:
+    """Run ``_resumable_download`` on a DAEMON thread bridged to an asyncio
+    future.
+
+    Deliberately NOT the default executor (review round 2, codex HIGH):
+    ``asyncio.run`` joins default-executor threads at shutdown, so a one-shot
+    CLI poll would block until the WHOLE transfer finished — the
+    ephemeral-poller contract is "exit promptly, keep the prefix, resume next
+    poll". A daemon thread dies with the process, and whatever it flushed is
+    a valid prefix for Range resume (writes are sequential appends).
+
+    The bridge catches ``Exception`` only — nothing in a plain worker thread
+    raises ``CancelledError``, and the invariant-3 discipline (never catch it)
+    stays intact. If the loop is already closed when the thread finishes
+    (process exiting), the outcome is dropped: the part stays on disk for the
+    next process to resume, and there is nobody left to tell."""
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[None] = loop.create_future()
+
+    def _finish(failure: Exception | None) -> None:
+        if fut.cancelled():
+            return
+        if failure is None:
+            fut.set_result(None)
+        else:
+            fut.set_exception(failure)
+
+    def _run() -> None:
+        failure: Exception | None
+        try:
+            with slots:  # bounded concurrency; excess transfers queue here
+                _resumable_download(location, part, expected_size)
+        except Exception as exc:  # noqa: BLE001 — thread→future boundary
+            failure = exc
+        else:
+            failure = None
+        try:
+            loop.call_soon_threadsafe(_finish, failure)
+        except RuntimeError:
+            pass  # loop closed mid-transfer; the part resumes elsewhere
+
+    threading.Thread(
+        target=_run, name=f"cds-transfer-{part.stem}", daemon=True
+    ).start()
+    return fut
+
+
 def _cds_result_metadata(cache_path: Path) -> dict[str, Any]:
     """Build the canonical ``metadata`` block for a successful CDS
     response. Single source of truth — used by submit-cache-hit,
@@ -582,6 +844,7 @@ _CDSAPI_RETRY_MAX: Final[int] = 3
 _CDSAPI_SLEEP_MAX: Final[int] = 10
 
 
+
 def _make_cdsapi_client(
     adapter: CdsApiKeyAdapter, *, dataset_id: str | None = None
 ) -> Any:
@@ -647,14 +910,48 @@ def _pending_response(*, request_id: str, cache_key: str, status: str) -> dict[s
 
 
 def _load_chunk_plan(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Parse a workflow row's ``chunk_plan_json`` into a dict ({} if absent/bad)."""
+    """Parse a workflow row's ``chunk_plan_json`` into a dict ({} if absent/bad).
+
+    T-CDS-RESIL-006: the row's ``chunk_plan_version`` rides along under the
+    in-memory-only ``_version`` key — every plan write is a compare-and-swap
+    against it (the cross-process serialisation the process-local parent lock
+    cannot give). ``_dump_plan`` strips it before persisting."""
     raw = row.get("chunk_plan_json")
+    plan: dict[str, Any] = {}
     if isinstance(raw, str):
         with contextlib.suppress(json.JSONDecodeError, TypeError):
             loaded = json.loads(raw)
             if isinstance(loaded, dict):
-                return loaded
-    return {}
+                plan = loaded
+    plan["_version"] = int(row.get("chunk_plan_version") or 0)
+    return plan
+
+
+def _dump_plan(plan: Mapping[str, Any]) -> str:
+    """Serialise a plan for persistence, minus the in-memory ``_version``."""
+    return json.dumps(
+        {k: v for k, v in plan.items() if k != "_version"},
+        sort_keys=True,
+        default=str,
+    )
+
+
+# T-CDS-RESIL-006: a chunk slot is RESERVED in the persisted plan (a winning
+# CAS write) before its remote submit, so two processes can never order the
+# same slot. A reservation older than this is presumed dead (its process
+# exited between reserve and assign) and is reclaimable — safely, because
+# ``_submit_chunk_child``'s adoption scan finds any child the dead reserver
+# did manage to submit.
+_RESERVATION_TTL_SECONDS: Final[float] = 900.0
+
+
+def _reservation_fresh(entry: Mapping[str, Any], now_iso: str) -> bool:
+    """True iff ``entry`` carries a live (non-stale) reservation."""
+    stamp = entry.get("reserved_at")
+    if not stamp:
+        return False
+    elapsed = _seconds_between(str(stamp), now_iso)
+    return elapsed is not None and 0 <= elapsed < _RESERVATION_TTL_SECONDS
 
 
 def _parent_multifile_result(descriptors: list[dict[str, Any]]) -> dict[str, Any]:
@@ -688,18 +985,37 @@ def _chunk_parent_response(
     status: str,
     files: list[dict[str, Any]] | None = None,
     evicted: list[int] | None = None,
+    partial_files: list[dict[str, Any]] | None = None,
+    missing_chunk_indices: list[int] | None = None,
+    phase_by_child: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate ``check_status`` envelope for a chunked parent (T-CDS-CHUNK-003):
-    the parent status + per-chunk breakdown + state counts. An unsubmitted chunk
-    counts as ``queued``; a submitted child with no known status as ``running``.
+    the parent status + per-chunk breakdown + state counts.
+
+    The per-state counts PARTITION the chunks — every chunk lands in exactly
+    one bucket, so they sum to ``total`` and a caller can add them up safely.
+    An unsubmitted chunk counts as ``queued``; a submitted child with no known
+    status as ``running``; a child whose local transfer is under way as
+    ``downloading`` (not also ``running``); a failed child awaiting a bounded
+    retry as ``retrying`` (T-CDS-RESIL-003) — but only while the parent is
+    still live, since a terminal parent will never run that retry and must not
+    advertise one.
+
+    ``phase_by_child`` (T-CDS-RESIL-005) carries the per-child download-phase
+    hints from the poll, and when EVERY remaining step is a local transfer the
+    parent itself gets ``phase="downloading"`` — the promotion signal an
+    ephemeral poller needs to hand the transfers to one long-lived ``wait``.
     When the parent is successful, ``files`` carries the resolved per-chunk
     descriptors so the response includes the multi-file result directly (the
     agent does not need a second download call)."""
     chunks = plan.get("chunks", []) if isinstance(plan.get("chunks"), list) else []
+    terminal_parent = status in ("successful", "failed", "cancelled")
     counts = {
         "total": len(chunks),
         "successful": 0,
         "running": 0,
+        "downloading": 0,
+        "retrying": 0,
         "queued": 0,
         "failed": 0,
         "cancelled": 0,
@@ -708,22 +1024,60 @@ def _chunk_parent_response(
     for chunk in chunks:
         cid = chunk.get("child_request_id")
         state = (child_status.get(cid) or "running") if cid else "queued"
+        if state == "failed" and chunk.get("retry_pending") and not terminal_parent:
+            state = "retrying"
+        entry: dict[str, Any] = {
+            "index": chunk.get("index"),
+            "request_id": cid,
+            "status": state,
+        }
+        phase = (phase_by_child or {}).get(cid) if cid else None
+        if phase and state in ("queued", "running"):
+            # A child with a known phase has finished its remote job (the
+            # poll answered ``downloading``) — its persisted row may still say
+            # ``queued`` (the row only flips at finalise), but for the
+            # aggregate view it is actively transferring. ``downloading`` is a
+            # state of its own, not a sub-count of ``running``.
+            state = "downloading" if phase == "downloading" else "running"
+            entry["status"] = state
+            entry["phase"] = phase
+        attempt = int(chunk.get("attempt", 0) or 0)
+        if attempt:
+            entry["attempt"] = attempt
         if state in counts:
             counts[state] += 1
-        per_chunk.append(
-            {"index": chunk.get("index"), "request_id": cid, "status": state}
-        )
+        per_chunk.append(entry)
     if status == "successful" and files is not None:
         result = _parent_multifile_result(files)
+        # The workflow really did succeed — every job ran and every file was
+        # downloaded — but a chunk file can have been evicted from the cache
+        # since. The set on offer is then SHORT, and a caller must not read it
+        # as the whole retrieval (Phase 1: never present a partial delivery as
+        # complete). ``fetch_result`` raises CacheError on this same state;
+        # ``complete`` is how the status envelope stays consistent with it.
+        # Always present on a successful parent, so its absence can never be
+        # mistaken for completeness.
+        result["complete"] = not evicted
         if evicted:
             result["evicted_chunk_indices"] = evicted
+            remaining = (
+                "the remaining files listed here are still valid on disk"
+                if files
+                else "no files remain on disk"
+            )
+            result["recovery_hint"] = (
+                "This result set is INCOMPLETE: the files for chunk indices "
+                f"{evicted} were evicted from the cache. Re-run the original "
+                "request with __options.force_refresh=true to re-retrieve the "
+                f"missing chunks; {remaining}."
+            )
     else:
         result = {
             "uri": f"copernicus://jobs/{parent_id}",
             "metadata": {"chunk_count": len(chunks)},
             "provenance": {},
         }
-    return {
+    out = {
         "status": status,
         "cache_hit": False,
         "is_existing": True,
@@ -738,6 +1092,31 @@ def _chunk_parent_response(
         "per_chunk": per_chunk,
         "result": result,
     }
+    # T-CDS-RESIL-005: promote the parent to ``phase="downloading"`` exactly
+    # when no remote-side work is left — every chunk is either successful or
+    # a running child whose only remaining step is the local transfer.
+    if (
+        status == "running"
+        and counts["downloading"] > 0
+        and counts["running"] == 0
+        and counts["queued"] == 0
+        and counts["retrying"] == 0
+        and counts["failed"] == 0
+        and counts["cancelled"] == 0
+    ):
+        out["phase"] = "downloading"
+    # T-CDS-RESIL-004: a terminally FAILED or CANCELLED parent still surfaces
+    # its successful children's descriptors — real, delivered data must stay
+    # adoptable (field report §2.3), and a cancel does not un-pay for the chunks
+    # that already landed. Explicitly labelled, never inside ``result``: a
+    # non-successful parent must not look successful.
+    if status in ("failed", "cancelled") and partial_files:
+        out["partial_result"] = {
+            "files": partial_files,
+            "chunk_indices": [f["chunk_index"] for f in partial_files],
+            "missing_chunk_indices": missing_chunk_indices or [],
+        }
+    return out
 
 
 def _success_response_from_cache(
@@ -809,7 +1188,7 @@ def _missing_product_type(
     dies with a cryptic ``UserError: Duplicate value for month`` after
     ~40 min in the queue (a small single request slips through, so the
     failure looks intermittent). We catch it here, pre-network, with the
-    valid values (T-CDS-PT, WP3 field report 2026-06-12).
+    valid values (T-CDS-PT, field report 2026-06-12).
 
     The scope is deliberately narrow. The bundled constraints come from
     POSTing EMPTY inputs to CDS, which lists every *selectable* field — not
@@ -993,6 +1372,14 @@ class CdsBackend(AbstractBackend):
         # terminal cannot leak; a missing entry ⇒ observation gets NULL cost.
         self._inflight_costing: dict[str, dict[str, float]] = {}
         self._inflight_costing_cap = 256
+        # T-CDS-DL-001 review round 1 (codex HIGH-3): live resumable transfers
+        # keyed by part path. Cancelling a download task ABANDONS its worker
+        # thread, which keeps appending to the stable part; a later poll must
+        # adopt that live transfer instead of opening a second writer on the
+        # same file. Futures here are shield-awaited so task cancellation
+        # never cancels the underlying transfer future itself.
+        self._part_transfers: dict[str, asyncio.Future[Any]] = {}
+        self._transfer_slots = threading.Semaphore(_MAX_CONCURRENT_TRANSFERS)
         # T-CDS-CHUNK-003: per-parent ref-counted lock (decisions 5/8). Both the
         # poll-driven advancement (`check_status`) and `cancel` serialise on it so
         # two concurrent polls can never submit the same next wave, and a cancel
@@ -1001,6 +1388,104 @@ class CdsBackend(AbstractBackend):
         self._parent_locks: dict[str, asyncio.Lock] = {}
         self._parent_lock_refs: dict[str, int] = {}
         self._parent_locks_dict_mutex = asyncio.Lock()
+
+    def _reap_part_transfer(self, request_id: str) -> None:
+        """Arrange removal of a cancelled request's transfer-registry entry.
+
+        Review round 2 (codex MEDIUM): a cancelled row is terminal — no later
+        finalise ever adopts its transfer, so without this the registry entry
+        (and an eventual unretrieved exception) would outlive the request in a
+        long-running server. The part file itself stays for the 7-day sweep
+        (accepted trade-off). Runs via done-callback so a still-writing daemon
+        thread finishes on its own clock."""
+        staging_root = self.foundation.cache.staging_root_for("cds")
+        part_key = str(staging_root / _part_basename(request_id))
+        transfer = self._part_transfers.get(part_key)
+        if transfer is None:
+            return
+
+        def _reap(fut: asyncio.Future[Any]) -> None:
+            self._part_transfers.pop(part_key, None)
+            if not fut.cancelled():
+                fut.exception()  # retrieve; silences never-retrieved warnings
+
+        transfer.add_done_callback(_reap)
+
+    async def _cas_mutate_plan(
+        self,
+        parent_id: str,
+        plan: dict[str, Any],
+        mutate: Any,
+        *,
+        attempts: int = 6,
+    ) -> bool:
+        """Apply ``mutate(plan)`` and CAS-write the result (T-CDS-RESIL-006).
+
+        ``mutate`` edits the plan in place and returns ``False`` to abort
+        (its precondition no longer holds against the freshest plan). On a
+        CAS loss the plan object is refreshed IN PLACE from the database and
+        ``mutate`` is re-applied — a loser re-decides, never blind-retries
+        stale bytes. Returns ``True`` when a write committed; ``False`` on
+        abort, a vanished row, or ``attempts`` straight losses (pathological
+        contention — the caller treats it as a loss and lets the next poll
+        continue).
+
+        The caller's ``plan`` reference always ends up reflecting the
+        freshest state this method observed, so subsequent aggregation
+        (``compute_parent_status``) sees other processes' committed work."""
+        for _ in range(attempts):
+            if not mutate(plan):
+                return False
+            committed = await self.foundation.persistence.update_chunk_plan(
+                parent_id,
+                _dump_plan(plan),
+                expected_version=int(plan.get("_version", 0)),
+            )
+            if committed:
+                plan["_version"] = int(plan.get("_version", 0)) + 1
+                return True
+            fresh_row = await self.foundation.persistence.fetch_workflow(
+                parent_id
+            )
+            if fresh_row is None:
+                return False
+            fresh = _load_chunk_plan(fresh_row)
+            plan.clear()
+            plan.update(fresh)
+        logger.warning(
+            "chunk plan CAS exhausted after %d attempts",
+            attempts,
+            extra={"request_id": parent_id},
+        )
+        return False
+
+    async def _release_reservation(
+        self,
+        parent_id: str,
+        plan: dict[str, Any],
+        idx: int | None,
+        token: str,
+    ) -> None:
+        """Best-effort: drop OUR reservation from slot ``idx`` (submit failed
+        before a child existed) so the slot is immediately reclaimable.
+
+        Review round 1 (codex HIGH): guarded by the owner ``token`` — if our
+        reservation went stale and another process reclaimed the slot, the
+        slot now carries THEIR token and this release must abort rather than
+        strip a live reservation."""
+        if idx is None:
+            return
+
+        def _release(p: dict[str, Any]) -> bool:
+            c = p["chunks"][idx]
+            if c.get("reserved_by") != token:
+                return False
+            c.pop("reserved_at", None)
+            c.pop("reserved_by", None)
+            return True
+
+        with contextlib.suppress(Exception):
+            await self._cas_mutate_plan(parent_id, plan, _release)
 
     @contextlib.asynccontextmanager
     async def _parent_lock(self, parent_id: str) -> AsyncIterator[None]:
@@ -1175,6 +1660,155 @@ class CdsBackend(AbstractBackend):
                 {"valid": False, "errors": errors}
             )
         return {"valid": True}
+
+    async def status_details(self) -> dict[str, Any]:
+        """Optional live diagnostics merged into ``copernicus_mcp_status``
+        (T-CDS-OPS-001): how many remote jobs the account has in flight —
+        callers pacing their own submissions previously had to guess, and
+        their own counters miss everything submitted by anything else.
+
+        Failure-tolerant by contract: any probe problem reports
+        ``"unavailable"`` rather than raising — the status tool must answer
+        even when CDS is down. Deliberately FAR from the retry classifier:
+        the Phase-1 lesson stands (no job census for capacity
+        CLASSIFICATION); this is operator reporting only."""
+        if self._auth_adapter is None:
+            return {}
+        try:
+            client = _make_cdsapi_client(self._auth_adapter)
+            jobs = await asyncio.to_thread(
+                client.client.get_jobs,
+                status=["accepted", "running"],
+                limit=_ACTIVE_JOBS_PAGE_LIMIT,
+            )
+            payload = await asyncio.to_thread(lambda: jobs.json)
+            entries = payload.get("jobs") if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                raise TypeError("unexpected get_jobs payload shape")
+            by_status: dict[str, int] = {}
+            for entry in entries:
+                key = str(entry.get("status", "unknown"))
+                by_status[key] = by_status.get(key, 0) + 1
+            block: dict[str, Any] = {
+                "count": len(entries),
+                "by_status": by_status,
+                "fetched_at": _iso_now(),
+            }
+            # Review round 1 (codex MEDIUM): ``get_jobs`` is paginated — a
+            # page filled to the limit means "at least this many", and an
+            # exact-looking count would make pacing callers underestimate
+            # the account's remote load.
+            if len(entries) >= _ACTIVE_JOBS_PAGE_LIMIT:
+                block["truncated"] = True
+            return {"active_remote_jobs": block}
+        except Exception as exc:  # noqa: BLE001 — diagnostics never raise
+            return {
+                "active_remote_jobs": "unavailable",
+                "active_remote_jobs_reason": self.foundation.sanitiser.sanitise(
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            }
+
+    def _licence_entry(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        """A slim, known-field subset of a licence record — invariant 2: only
+        fields we understand go on the wire, never whatever the profile API
+        happens to attach."""
+        return {
+            key: raw.get(key)
+            for key in ("id", "revision", "label", "scope", "contents_url")
+            if raw.get(key) is not None
+        }
+
+    async def list_licences(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The store's licence catalogue plus the account's accepted set
+        (T-CDS-LICENCE-001). ``dataset_id`` (optional) routes to the right
+        store — licence ids are per-store (CDS / ADS / EWDS)."""
+        self._check_credentials_or_raise()
+        assert self._auth_adapter is not None
+        dataset_id = params.get("dataset_id") or None
+        client = _make_cdsapi_client(self._auth_adapter, dataset_id=dataset_id)
+        try:
+            available = await asyncio.to_thread(client.client.get_licences)
+            accepted = await asyncio.to_thread(client.client.get_accepted_licences)
+        except Exception as exc:  # noqa: BLE001 — wrap SDK errors uniformly
+            raise self._wrap_sdk_error(exc, op="list_licences") from exc
+        store = (
+            _catalogue.store_for(dataset_id) if dataset_id is not None else "cds"
+        )
+        return self.foundation.sanitiser.sanitise(  # type: ignore[no-any-return]
+            {
+                "store": store or "cds",
+                "available": [self._licence_entry(e) for e in available or []],
+                "accepted": [self._licence_entry(e) for e in accepted or []],
+            }
+        )
+
+    async def accept_licence(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Accept a dataset licence under the operator's standing authority
+        (T-CDS-LICENCE-001). Acceptance legally binds the ACCOUNT owner —
+        which is why the MCP tool surface for this method is opt-in
+        (``budget.cds_licence_accept_enabled``); the CLI is always allowed,
+        being the operator's own hands.
+
+        DELIBERATELY not re-gated here (review round 1): the flag governs the
+        AGENT-visible surface only, and this method must stay reachable for
+        the CLI regardless of it. Consequence for future maintainers: any new
+        agent-facing surface that can dispatch orchestrator operations by
+        name would bypass the flag — such a surface must enforce
+        ``cds_licence_accept_enabled`` itself before exposing this operation.
+        """
+        licence_id = params.get("licence_id")
+        revision = params.get("revision")
+        if not isinstance(licence_id, str) or not licence_id.strip():
+            raise CmcpValidationError(
+                "licence_id is required",
+                record=build_error_record(
+                    "ValidationError",
+                    message="accept_licence requires a non-empty licence_id",
+                    recovery_action="modify_request_parameters",
+                ),
+            )
+        if (
+            not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision < 0
+        ):
+            raise CmcpValidationError(
+                "revision is required",
+                record=build_error_record(
+                    "ValidationError",
+                    message=(
+                        "accept_licence requires an integer revision — the "
+                        "value cds_list_licences reports for the licence"
+                    ),
+                    recovery_action="modify_request_parameters",
+                ),
+            )
+        self._check_credentials_or_raise()
+        assert self._auth_adapter is not None
+        dataset_id = params.get("dataset_id") or None
+        client = _make_cdsapi_client(self._auth_adapter, dataset_id=dataset_id)
+        try:
+            await asyncio.to_thread(
+                client.client.accept_licence, licence_id, revision
+            )
+        except Exception as exc:  # noqa: BLE001 — wrap SDK errors uniformly
+            raise self._wrap_sdk_error(exc, op="accept_licence") from exc
+        store = (
+            _catalogue.store_for(dataset_id) if dataset_id is not None else "cds"
+        )
+        return self.foundation.sanitiser.sanitise(  # type: ignore[no-any-return]
+            {
+                "accepted": True,
+                "licence_id": licence_id,
+                "revision": revision,
+                "store": store or "cds",
+                "note": (
+                    "Acceptance binds the account owner. Re-submit the "
+                    "original request now."
+                ),
+            }
+        )
 
     async def apply_constraints(self, params: dict[str, Any]) -> dict[str, Any]:
         """Progressive constraints narrowing for CDS / ADS / EWDS (T-CDS-016).
@@ -1522,8 +2156,16 @@ class CdsBackend(AbstractBackend):
         # the search to THIS parent's own children — the global newest-by-cache_key
         # lookup would be shadowed by a same-chunk child of a *different*
         # (legitimately separate) parent and miss the orphan.
+        # T-CDS-RESIL-003: skip terminally failed/cancelled candidates — a retry
+        # re-submits the SAME chunk (same cache_key) after its predecessor
+        # failed, and adopting the dead predecessor would make retry a no-op. A
+        # prior *successful* child is still adopted: that data is already paid
+        # for.
         for child in await self.foundation.persistence.list_child_workflows(parent_id):
-            if child.get("cache_key") == child_cache_key:
+            if child.get("cache_key") == child_cache_key and child["status"] not in (
+                "failed",
+                "cancelled",
+            ):
                 return child["request_id"]
         child_safe = self.foundation.sanitiser.sanitise(
             {"dataset_id": dataset_id, "inputs": child_inputs}
@@ -1536,6 +2178,167 @@ class CdsBackend(AbstractBackend):
             parent_request_id=parent_id,
         )
 
+    def _maybe_raise_size_confirmation(
+        self, estimate: dict[str, Any], options: dict[str, Any]
+    ) -> None:
+        """The size/queue confirmation gate, shared by the single-request path
+        and the model fan-out (review M1: a two-model request must not sail
+        past a gate its single-model sibling would hit): bytes > threshold OR
+        queue tier configured OR size unknown when configured, unless
+        ``confirmed``."""
+        budget = self.foundation.config.budget
+        threshold_bytes = int(
+            budget.cds_per_request_size_warning_gb * 1_000_000_000
+        )
+        bytes_estimate = estimate.get("estimated_size_bytes")
+        tier = estimate.get("queue_latency_tier")
+        size_over = bytes_estimate is not None and bytes_estimate > threshold_bytes
+        unknown_over = (
+            bytes_estimate is None and budget.cds_confirm_on_unknown_size
+        )
+        tier_over = tier in budget.cds_confirm_on_queue_tier
+        if not options.get("confirmed") and (size_over or unknown_over or tier_over):
+            if size_over:
+                reason = "estimated_size_threshold_exceeded"
+            elif unknown_over:
+                reason = "estimated_size_unknown"
+            else:
+                reason = "queue_latency_tier_exceeded"
+            raise _build_cds_confirmation(
+                estimate=estimate,
+                threshold_bytes=threshold_bytes,
+                reason=reason,
+            )
+
+    async def _submit_model_split(
+        self,
+        *,
+        req: CdsRetrieveRequest,
+        estimate: dict[str, Any],
+        options: dict[str, Any],
+        model_axes: tuple[str, ...],
+        model_overrides: list[dict[str, Any]],
+        cache_key: str,
+        costing_fn: Any,
+    ) -> dict[str, Any]:
+        """Fan a multi-model request on a single-model-execution dataset out
+        into one child per model combination (T-CDS-MODEL-001), reusing the
+        chunked-parent machinery. Refuses loudly rather than ever letting the
+        request through whole — a silent submit would deliver only the first
+        model of the list."""
+        budget = self.foundation.config.budget
+        inputs = dict(req.inputs)
+
+        def _refuse(detail: str) -> CmcpValidationError:
+            return CmcpValidationError(
+                f"multi-model request on {req.dataset_id!r} cannot be "
+                "executed as one CDS job",
+                record=build_error_record(
+                    "ValidationError",
+                    message=(
+                        f"{req.dataset_id!r} executes ONE model per request: "
+                        "a list is accepted by the API but only the FIRST "
+                        f"model is delivered, silently. {detail} Submit one "
+                        "request per model instead."
+                    ),
+                    recovery_action="modify_request_parameters",
+                ),
+            )
+
+        if options.get("auto_chunk", True) is False or not budget.cds_auto_chunk_enabled:
+            raise _refuse(
+                "Automatic fan-out is disabled "
+                "(auto_chunk=false / cds_auto_chunk_enabled=false), and the "
+                "MCP will not submit a request that silently loses models."
+            )
+
+        # Review M1: the same size/queue gate the single-request path applies —
+        # fanning out must not bypass a confirmation the equivalent
+        # single-model request would require.
+        self._maybe_raise_size_confirmation(estimate, options)
+
+        # Invariant-2 parity with the calendar-token guard: the overrides are
+        # persisted verbatim in ``chunk_plan_json``, so every token must come
+        # from the dataset's known vocabulary (bundled constraints snapshot).
+        vocabulary: dict[str, set[str]] = {}
+        snapshot = _catalogue.load_constraints().get(req.dataset_id, {})
+        for axis in model_axes:
+            values = snapshot.get(axis)
+            if isinstance(values, list):
+                vocabulary[axis] = {str(v) for v in values}
+        bad_tokens = model_tokens_outside_vocabulary(model_overrides, vocabulary)
+        if bad_tokens:
+            raise _refuse(
+                f"Model token(s) {bad_tokens!r} are not in the dataset's "
+                "known vocabulary, so a safe split cannot be validated."
+            )
+
+        cost = estimate.get("cost")
+        cost_limit = float(cost["limit"]) if cost is not None else 0.0
+        chunk_by = options.get("chunk_by") or "year"
+        if chunk_by not in ("year", "month", "day"):
+            raise CmcpValidationError(
+                f"invalid chunk_by {chunk_by!r}",
+                record=build_error_record(
+                    "ValidationError",
+                    message=(
+                        "__options.chunk_by must be one of year/month/day, "
+                        f"got {chunk_by!r}"
+                    ),
+                    recovery_action="modify_request_parameters",
+                ),
+            )
+        try:
+            plan = await build_model_chunk_plan(
+                inputs,
+                model_overrides,
+                cost_limit=cost_limit or None,
+                chunk_by=chunk_by,
+                costing_fn=costing_fn,
+                max_chunks=budget.cds_auto_chunk_max_chunks,
+            )
+        except ChunkPlanError as exc:
+            detail = f"The fan-out could not produce a usable plan ({exc.reason})."
+            if exc.reason == "exceeds_at_finest":
+                detail = (
+                    "A single model's share of this request already exceeds "
+                    "the dataset's per-request cost limit and cannot be "
+                    "sub-split further — narrow the selection (fewer "
+                    "variables / a shorter period) as well."
+                )
+            elif exc.detail:
+                detail = exc.detail
+            raise _refuse(detail) from exc
+
+        # Same fan-out confirmation tiers as the cost-based split — the reason
+        # for splitting differs, the number of jobs launched does not.
+        n_chunks = len(plan.chunks)
+        if n_chunks > budget.cds_auto_chunk_confirm_above and not options.get(
+            "confirmed"
+        ):
+            raise _build_chunk_count_confirmation(
+                chunk_count=n_chunks,
+                threshold=budget.cds_auto_chunk_confirm_above,
+                reason="auto_chunk_job_count",
+                require_large_ack=False,
+            )
+        if n_chunks > budget.cds_auto_chunk_reconfirm_above and not options.get(
+            "confirm_large_fanout"
+        ):
+            raise _build_chunk_count_confirmation(
+                chunk_count=n_chunks,
+                threshold=budget.cds_auto_chunk_reconfirm_above,
+                reason="auto_chunk_job_count_large",
+                require_large_ack=True,
+            )
+
+        return await self._submit_chunk_parent(
+            req=req,
+            plan=plan,
+            cache_key=cache_key,
+            cost_limit=cost_limit,
+        )
+
     async def _submit_chunk_parent(
         self,
         *,
@@ -1545,10 +2348,15 @@ class CdsBackend(AbstractBackend):
         cost_limit: float,
     ) -> dict[str, Any]:
         """Create the logical parent workflow row for a chunked request and
-        submit ALL of its children at once (T-CDS-CHUNK v2 — no inflight throttle;
-        CDS queues any excess rather than rejecting it). Returns the parent
-        (multi-file) envelope — same family as a single pending submit, with
-        additive ``chunked``/``chunk_count`` fields.
+        submit a PACED first wave of children — at most
+        ``budget.cds_chunk_max_inflight`` (0 = all at once). The poll-driven
+        refill (``_refill_chunk_children``) submits the rest as earlier
+        children reach a terminal state. T-CDS-RESIL-002: the v2 premise "CDS
+        queues any excess rather than rejecting it" was disproved live (field report
+        run 31 — a 21-child burst tripped the per-user concurrency throttle
+        and failed 39/42 children with the empty-log signature). Returns the
+        parent (multi-file) envelope — same family as a single pending submit,
+        with additive ``chunked``/``chunk_count`` fields.
 
         Called inside the per-cache-key submit lock, so the parent row and its
         children are created atomically with respect to a duplicate submit. If a
@@ -1597,15 +2405,47 @@ class CdsBackend(AbstractBackend):
                 "chunk_plan_json": json.dumps(plan_doc, sort_keys=True, default=str),
             }
         )
-        # Submit ALL children at once. The plan is persisted incrementally after
-        # EACH child (codex/local Tier-A): a failure or cancellation mid-wave must
-        # leave the plan a truthful resume point, not a stale "no children
-        # submitted" snapshot. ``_submit_chunk_child`` adopts an already-submitted
-        # child by cache_key, so a retry after an interrupted submit never
-        # duplicates.
+        # Submit the first wave, bounded by the inflight budget. The plan is
+        # persisted incrementally after EACH child (codex/local Tier-A): a
+        # failure or cancellation mid-wave must leave the plan a truthful
+        # resume point, not a stale "no children submitted" snapshot.
+        # ``_submit_chunk_child`` adopts an already-submitted child by
+        # cache_key, so a retry after an interrupted submit never duplicates.
+        # T-CDS-RESIL-006: each slot is RESERVED by a winning CAS write
+        # before its remote call — a concurrent poller (cache-key dedupe can
+        # hand this parent to another process mid-wave) can never order the
+        # same slot.
+        plan_doc["_version"] = 0
+        max_inflight = self.foundation.config.budget.cds_chunk_max_inflight
+        wave_size = (
+            len(chunk_entries) if max_inflight <= 0 else max_inflight
+        )
         wave_ok = False
         try:
-            for entry in chunk_entries:
+            for idx in range(min(wave_size, len(chunk_entries))):
+                # Review r1 (codex HIGH): the reservation carries an owner
+                # token; assign/release abort unless the slot still holds OUR
+                # token, so a reclaimed-after-TTL slot can never be clobbered
+                # by the stale reserver waking up.
+                token = uuid.uuid4().hex
+
+                def _reserve(
+                    p: dict[str, Any], _idx: int = idx, _tok: str = token
+                ) -> bool:
+                    c = p["chunks"][_idx]
+                    if (
+                        p.get("stopped")
+                        or c.get("child_request_id")
+                        or _reservation_fresh(c, _iso_now())
+                    ):
+                        return False
+                    c["reserved_at"] = _iso_now()
+                    c["reserved_by"] = _tok
+                    return True
+
+                if not await self._cas_mutate_plan(parent_id, plan_doc, _reserve):
+                    continue  # someone else took this slot — not ours to order
+                entry = plan_doc["chunks"][idx]
                 child_id = await self._submit_chunk_child(
                     dataset_id=req.dataset_id,
                     parent_inputs=inputs,
@@ -1614,10 +2454,22 @@ class CdsBackend(AbstractBackend):
                     cost_limit=cost_limit,
                     parent_id=parent_id,
                 )
-                entry["child_request_id"] = child_id
-                await self.foundation.persistence.update_chunk_plan(
-                    parent_id, json.dumps(plan_doc, sort_keys=True, default=str)
-                )
+
+                def _assign(
+                    p: dict[str, Any],
+                    _idx: int = idx,
+                    _cid: str = child_id,
+                    _tok: str = token,
+                ) -> bool:
+                    c = p["chunks"][_idx]
+                    if c.get("reserved_by") != _tok:
+                        return False  # our reservation was reclaimed
+                    c["child_request_id"] = _cid
+                    c.pop("reserved_at", None)
+                    c.pop("reserved_by", None)
+                    return True
+
+                await self._cas_mutate_plan(parent_id, plan_doc, _assign)
             wave_ok = True
         finally:
             if not wave_ok:
@@ -1673,12 +2525,15 @@ class CdsBackend(AbstractBackend):
             await self.foundation.persistence.update_workflow_status(
                 parent_id, "failed"
             )
-        # 2. Persist the plan as a truthful resume point.
-        plan_doc["stopped"] = True
+        # 2. Persist the plan as a truthful resume point. CAS loop
+        # (T-CDS-RESIL-006): a concurrent poller's committed assignment must
+        # survive; ``stopped`` is re-applied onto the freshest plan.
+        def _mark_stopped(p: dict[str, Any]) -> bool:
+            p["stopped"] = True
+            return True
+
         with contextlib.suppress(Exception):
-            await self.foundation.persistence.update_chunk_plan(
-                parent_id, json.dumps(plan_doc, sort_keys=True, default=str)
-            )
+            await self._cas_mutate_plan(parent_id, plan_doc, _mark_stopped)
         # 3. Best-effort remote cleanup of any children already submitted (no
         #    leaked CDS jobs under a dead parent). Shared with cancel; entirely
         #    suppressed and decoupled from the cure above.
@@ -1732,6 +2587,56 @@ class CdsBackend(AbstractBackend):
         assert self._auth_adapter is not None
 
         options = dict(params.get("__options") or {}) if isinstance(params, dict) else {}
+
+        # T-CDS-KEYCHECK-001: reject input keys the dataset does not accept,
+        # BEFORE anything is queued or cached. The server accepts unknown keys
+        # and silently ignores them — observed twice: E-OBS + ``area`` ran two
+        # minutes and failed with an empty log (field run 28), and a CORDEX
+        # request with obsolete period keys delivered the ENTIRE series
+        # instead of the requested slice (spike T-CDS-MODEL-000). The accepted
+        # key set ships in our constraints snapshot and includes adaptor keys
+        # (area/data_format/…) where genuinely supported — sweep-verified.
+        # Fail-open when the dataset has no snapshot entry: a stale snapshot
+        # is our problem, never the caller's.
+        if self.foundation.config.budget.cds_input_key_validation and not options.get(
+            "skip_input_validation"
+        ):
+            unknown_keys = _unknown_input_keys(req.dataset_id, dict(req.inputs))
+            if unknown_keys:
+                accepted = sorted(
+                    _catalogue.accepted_input_keys(req.dataset_id) or set()
+                )
+                format_hint = (
+                    " Legacy `format` is not accepted by modern CDS — use "
+                    "`data_format` (netcdf|grib) plus `download_format` "
+                    "(zip|unarchived)."
+                    if "format" in unknown_keys
+                    else ""
+                )
+                raise CmcpValidationError(
+                    f"unknown input key(s) for {req.dataset_id!r}",
+                    record=build_error_record(
+                        "ValidationError",
+                        # Key NAMES are user-supplied — a pasted credential
+                        # would otherwise echo verbatim into the record.
+                        message=self.foundation.sanitiser.sanitise(
+                            f"Input key(s) {sorted(unknown_keys)!r} are not "
+                            f"accepted by {req.dataset_id!r}. The server "
+                            "would silently ignore them — delivering the "
+                            "wrong selection or failing later with an empty "
+                            "log — so the request is rejected up front."
+                        ),
+                        recovery_action="modify_request_parameters",
+                        next_action_hint=(
+                            f"Accepted keys for this dataset: {accepted}."
+                            f"{format_hint} If a key is newly added upstream "
+                            "and our snapshot is stale, call "
+                            "cds_apply_constraints for the live form or pass "
+                            "__options.skip_input_validation=true."
+                        ),
+                    ),
+                )
+
         safe_params = self.foundation.sanitiser.sanitise(params)
         cache_key = self.foundation.data_model.cache_key_for_cds_retrieve(req)
 
@@ -1822,6 +2727,43 @@ class CdsBackend(AbstractBackend):
                 estimate = await self.estimate(params)
                 budget = self.foundation.config.budget
 
+                async def _costing_fn(
+                    child_inputs: dict[str, Any],
+                ) -> float | None:
+                    result = await fetch_costing(
+                        req.dataset_id,
+                        child_inputs,
+                        http_client_factory=self.foundation.http_client_factory,
+                        catalogue=_catalogue,
+                    )
+                    return result.units if result is not None else None
+
+                # T-CDS-MODEL-001: on the registered single-model-execution
+                # datasets a multi-model request ALWAYS fans out — one child
+                # per model combination — because the Rook backend silently
+                # executes only the FIRST model of a list (field run 19; CORDEX
+                # confirmed live in spike T-CDS-MODEL-000). Unconditional: the
+                # loss is semantic, not size, so this runs BEFORE and
+                # independently of the cost-limit branch (a per-model child
+                # over the limit is calendar-sub-split inside the composed
+                # plan builder).
+                model_axes = SINGLE_MODEL_EXECUTION_AXES.get(req.dataset_id)
+                model_overrides = (
+                    propose_model_chunks(dict(req.inputs), model_axes)
+                    if model_axes is not None
+                    else None
+                )
+                if model_overrides is not None:
+                    return await self._submit_model_split(
+                        req=req,
+                        estimate=estimate,
+                        options=options,
+                        model_axes=model_axes or (),
+                        model_overrides=model_overrides,
+                        cache_key=cache_key,
+                        costing_fn=_costing_fn,
+                    )
+
                 # T-CDS-CHUNK-002 (model B): pre-flight cost-limit handling,
                 # BEFORE the confirmation gate. ``cost``/``limit`` are the CDS
                 # server's own authoritative numbers (the logic behind the 403),
@@ -1871,17 +2813,6 @@ class CdsBackend(AbstractBackend):
                                 recovery_action="modify_request_parameters",
                             ),
                         )
-
-                    async def _costing_fn(
-                        child_inputs: dict[str, Any],
-                    ) -> float | None:
-                        result = await fetch_costing(
-                            req.dataset_id,
-                            child_inputs,
-                            http_client_factory=self.foundation.http_client_factory,
-                            catalogue=_catalogue,
-                        )
-                        return result.units if result is not None else None
 
                     try:
                         plan = await build_chunk_plan(
@@ -1933,28 +2864,7 @@ class CdsBackend(AbstractBackend):
                 # Confirmation gate (codex spec review HIGH-3 hybrid):
                 #   bytes > threshold OR queue tier in {medium, heavy} OR
                 #   size unknown (whole-file product) when configured.
-                threshold_bytes = int(
-                    budget.cds_per_request_size_warning_gb * 1_000_000_000
-                )
-                bytes_estimate = estimate.get("estimated_size_bytes")
-                tier = estimate.get("queue_latency_tier")
-                size_over = bytes_estimate is not None and bytes_estimate > threshold_bytes
-                unknown_over = (
-                    bytes_estimate is None and budget.cds_confirm_on_unknown_size
-                )
-                tier_over = tier in budget.cds_confirm_on_queue_tier
-                if not options.get("confirmed") and (size_over or unknown_over or tier_over):
-                    if size_over:
-                        reason = "estimated_size_threshold_exceeded"
-                    elif unknown_over:
-                        reason = "estimated_size_unknown"
-                    else:
-                        reason = "queue_latency_tier_exceeded"
-                    raise _build_cds_confirmation(
-                        estimate=estimate,
-                        threshold_bytes=threshold_bytes,
-                        reason=reason,
-                    )
+                self._maybe_raise_size_confirmation(estimate, options)
 
                 # T-CDS-CHUNK-002: the SDK retrieve + workflow-row + costing
                 # capture is shared with the auto-chunk children, so it lives in
@@ -2010,10 +2920,14 @@ class CdsBackend(AbstractBackend):
                 out[cid] = r["status"] if r is not None else "running"
         return out
 
-    async def _poll_chunk_children(self, plan: dict[str, Any]) -> None:
+    async def _poll_chunk_children(self, plan: dict[str, Any]) -> dict[str, str]:
         """Poll each submitted, non-terminal child via the single-request path
         (which finalises + downloads on success). Best-effort per child — a poll
-        error on one must not abort the whole parent advance."""
+        error on one must not abort the whole parent advance. Returns the
+        per-child ``phase`` hints the polls surfaced (T-CDS-RESIL-005: a child
+        whose CDS job is done but whose file is still transferring answers
+        ``phase="downloading"``) so the parent aggregation can expose them."""
+        phases: dict[str, str] = {}
         for chunk in plan.get("chunks", []):
             cid = chunk.get("child_request_id")
             if not cid:
@@ -2022,35 +2936,344 @@ class CdsBackend(AbstractBackend):
             if row is None or row["status"] in ("successful", "failed", "cancelled"):
                 continue
             with contextlib.suppress(Exception):
-                await self.check_status(cid)
+                envelope = await self.check_status(cid)
+                phase = envelope.get("phase") if isinstance(envelope, dict) else None
+                if isinstance(phase, str) and phase:
+                    phases[cid] = phase
+        return phases
+
+    async def _chunk_failure_retryable(self, child_id: str, sibling_ok: bool) -> bool:
+        """Is this failed child's failure retryable (T-CDS-RESIL-003)?
+
+        - persisted record says ``retryable`` (RESIL-001 classified it
+          ``capacity_suspected`` at failure time) → yes;
+        - record classified ``unknown`` (empty log, no corroboration then) AND
+          a sibling chunk is ``successful`` NOW → yes (late corroboration: the
+          shared request shape is proven good);
+        - anything else — content failure, T&C, no record → no. A malformed
+          request that is retried is a slower way to fail (field report §5)."""
+        row = await self.foundation.persistence.fetch_workflow(child_id)
+        record_json = row.get("error_record_json") if row is not None else None
+        if not record_json:
+            return False
+        try:
+            record = json.loads(record_json)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        if record.get("retryable") is True:
+            return True
+        fc = (record.get("context") or {}).get("failure_classification")
+        if not isinstance(fc, dict):
+            return False
+        return fc.get("class") == "unknown" and sibling_ok
+
+    async def _retry_failed_children(
+        self, row: Mapping[str, Any], plan: dict[str, Any]
+    ) -> bool:
+        """Re-submit chunks whose child failed with the capacity signature
+        (T-CDS-RESIL-003): same overrides, a NEW child id, at most
+        ``budget.cds_chunk_retry_limit`` re-submissions per chunk, spaced by
+        ``budget.cds_chunk_retry_backoff_seconds`` (poll-driven — the window
+        is observed on the next poll after it passes) and bounded by the
+        inflight budget. Runs between the child poll and the refill, under
+        the per-parent lock. The superseded child id is preserved in the
+        plan entry (``superseded_child_ids``) — its row stays ``failed``
+        forever; adoption skips it. A concurrent cancel (persisted
+        ``stopped``) wins: no resubmit after it.
+
+        A chunk marked ``retry_pending`` is masked as ACTIVE by
+        ``compute_parent_status``, so every path that PERMANENTLY declines to
+        retry one must clear the flag — otherwise the parent can neither
+        succeed (that chunk has no file) nor fail (the mask hides it) and runs
+        forever. Only the temporary declines (backoff window still open,
+        inflight budget full) keep the flag set. A cancelled (``stopped``) plan
+        needs no clearing: masking turns the failure into ``running``, so the
+        ``stopped`` branch of ``compute_parent_status`` settles it.
+
+        Returns ``True`` when it settled the parent terminally, so the caller
+        SKIPS the refill: the refill only inspects ``stopped`` and child
+        statuses, never the parent's own status, and would happily order fresh
+        remote jobs under a parent that just died — spending the very
+        concurrency slots this feature exists to conserve."""
+        budget = self.foundation.config.budget
+        limit = budget.cds_chunk_retry_limit
+        if plan.get("stopped"):
+            return False
+        backoff = budget.cds_chunk_retry_backoff_seconds
+        max_inflight = budget.cds_chunk_max_inflight
+        parent_id = row["request_id"]
+        dataset_id, inputs = self._parent_request_inputs(row)
+        cost_limit = float(plan.get("cost_limit", 0.0))
+        statuses = await self._child_status_map(plan)
+
+        async def _decline_permanently(idx: int) -> None:
+            """Stop masking a chunk we will never retry again, so the parent
+            can reach a terminal status on this very poll. CAS
+            (T-CDS-RESIL-006): re-applied onto the freshest plan on a loss."""
+
+            def _clear(p: dict[str, Any]) -> bool:
+                c = p["chunks"][idx]
+                if not c.get("retry_pending"):
+                    return False
+                c["retry_pending"] = False
+                c["last_failed_at"] = None
+                return True
+
+            await self._cas_mutate_plan(parent_id, plan, _clear)
+
+        # Index-based iteration (T-CDS-RESIL-006): a CAS loss refreshes the
+        # plan object's contents in place, so entries are re-bound from
+        # ``plan["chunks"][idx]`` rather than iterated as stale objects. The
+        # chunk list's length is fixed at parent creation.
+        for idx in range(len(plan.get("chunks", []))):
+            entry = plan["chunks"][idx]
+            cid = entry.get("child_request_id")
+            if not cid or statuses.get(cid) != "failed":
+                continue
+            # Permanent declines — retry disabled, attempts spent, or the
+            # failure is about the request rather than capacity. Each must
+            # release the mask (a lowered/zeroed limit between polls is an
+            # ordinary operator restart, not an exotic case).
+            # Review M3: corroboration is per-CHUNK — only a successful
+            # sibling sharing the same non-calendar overrides (same model /
+            # GCM×RCM pair) vouches for this chunk's request shape.
+            sibling_ok = sibling_corroborates(
+                entry, plan.get("chunks", []), statuses
+            )
+            if (
+                limit <= 0
+                or int(entry.get("attempt", 0)) >= limit
+                or not await self._chunk_failure_retryable(cid, sibling_ok)
+            ):
+                await _decline_permanently(idx)
+                # This chunk will never deliver, so the parent is doomed: stop
+                # the whole pass. Continuing would re-submit some OTHER,
+                # capacity-classified chunk — a real CDS job ordered under a
+                # parent that is about to be terminal, reclaimed only by a
+                # best-effort remote delete. Same defect the refill has, other
+                # loop. (Returns False, not True: this pass did not settle the
+                # parent — ``compute_parent_status`` will. The refill that runs
+                # next is stopped by its own blocked-chunk scan.)
+                return False
+            now = _iso_now()
+            if not entry.get("retry_pending"):
+                # First observation of this failure: start the backoff clock.
+
+                def _mark_pending(
+                    p: dict[str, Any], _idx: int = idx, _cid: str = cid
+                ) -> bool:
+                    c = p["chunks"][_idx]
+                    if c.get("child_request_id") != _cid or c.get(
+                        "retry_pending"
+                    ):
+                        return False  # another process got here first
+                    c["retry_pending"] = True
+                    c["last_failed_at"] = _iso_now()
+                    return True
+
+                await self._cas_mutate_plan(parent_id, plan, _mark_pending)
+                entry = plan["chunks"][idx]
+            elapsed = _seconds_between(entry.get("last_failed_at"), now)
+            if elapsed is None or elapsed < 0:
+                # Unparseable stamp (hand-edited / corrupted plan), or a clock
+                # that stepped backwards: restart the window from now instead
+                # of parking the chunk for the whole skew. A parked chunk is
+                # masked as active, so this is the residual of the
+                # immortal-parent class.
+
+                def _restart_clock(p: dict[str, Any], _idx: int = idx) -> bool:
+                    p["chunks"][_idx]["last_failed_at"] = _iso_now()
+                    return True
+
+                await self._cas_mutate_plan(parent_id, plan, _restart_clock)
+                continue
+            if elapsed < backoff:
+                continue
+            if max_inflight > 0:
+                active = 0
+                for c in plan.get("chunks", []):
+                    ccid = c.get("child_request_id")
+                    s = statuses.get(ccid) if ccid else None
+                    if ccid and (s in ("queued", "running") or s is None):
+                        active += 1
+                    elif _reservation_fresh(c, now):
+                        # A fresh reservation (ours or another process's) is
+                        # a child about to exist — it occupies budget.
+                        active += 1
+                if active >= max_inflight:
+                    continue  # a later poll retries when a slot frees
+            # T-CDS-RESIL-006: reserve the retry slot with a CAS BEFORE the
+            # remote call — subsumes the old stopped-flag re-read (the mutate
+            # re-checks ``stopped`` against the freshest plan, race-free) and
+            # makes a cross-process duplicate resubmit impossible.
+
+            retry_token = uuid.uuid4().hex  # review r1: owner token
+
+            def _reserve_retry(
+                p: dict[str, Any],
+                _idx: int = idx,
+                _cid: str = cid,
+                _tok: str = retry_token,
+            ) -> bool:
+                c = p["chunks"][_idx]
+                if p.get("stopped"):
+                    return False  # decision 8: a concurrent cancel wins
+                if c.get("child_request_id") != _cid:
+                    return False  # another process already retried this chunk
+                if _reservation_fresh(c, _iso_now()):
+                    return False  # another process is mid-retry on it
+                c["reserved_at"] = _iso_now()
+                c["reserved_by"] = _tok
+                return True
+
+            if not await self._cas_mutate_plan(parent_id, plan, _reserve_retry):
+                if plan.get("stopped"):
+                    return False
+                continue
+            # Rebind after the CAS (review LOW): a loss replaced the chunks
+            # list, and reading from a detached entry object is a latent trap.
+            entry = plan["chunks"][idx]
+            try:
+                new_id = await self._submit_chunk_child(
+                    dataset_id=dataset_id,
+                    parent_inputs=inputs,
+                    overrides=entry["overrides"],
+                    units=entry["units"],
+                    cost_limit=cost_limit,
+                    parent_id=parent_id,
+                )
+            except CopernicusMcpError as exc:
+                # Decision-10 parity: a resubmit that fails at submit time
+                # (sync 400 / T&C / SDK) fails the parent with the canonical
+                # record preserved — no silent looping.
+                await self._release_reservation(parent_id, plan, idx, retry_token)
+                record = getattr(exc, "error_record", None)
+                if record is not None:
+                    err_json = json.dumps(
+                        self.foundation.sanitiser.sanitise(
+                            record.model_dump(mode="json")
+                        ),
+                        sort_keys=True,
+                        default=str,
+                    )
+                    await self.foundation.persistence.update_workflow_error_if_pending(
+                        parent_id, "failed", err_json
+                    )
+                else:
+                    await self.foundation.persistence.update_workflow_status_if_pending(
+                        parent_id, "failed"
+                    )
+                # The parent is settled: tell the caller to skip the refill.
+                return True
+
+            def _assign_retry(
+                p: dict[str, Any],
+                _idx: int = idx,
+                _old: str = cid,
+                _new: str = new_id,
+                _tok: str = retry_token,
+            ) -> bool:
+                c = p["chunks"][_idx]
+                if c.get("reserved_by") != _tok:
+                    return False  # reclaimed while we stalled — theirs now
+                superseded = c.setdefault("superseded_child_ids", [])
+                if _old not in superseded:
+                    superseded.append(_old)
+                c["child_request_id"] = _new
+                c["attempt"] = int(c.get("attempt", 0)) + 1
+                c["retry_pending"] = False
+                c["last_failed_at"] = None
+                c.pop("reserved_at", None)
+                c.pop("reserved_by", None)
+                return True
+
+            await self._cas_mutate_plan(parent_id, plan, _assign_retry)
+            statuses = await self._child_status_map(plan)
+        return False
 
     async def _refill_chunk_children(
         self, row: Mapping[str, Any], plan: dict[str, Any]
     ) -> None:
-        """Submit any not-yet-submitted chunks (T-CDS-CHUNK v2 — no throttle, so
-        normally a no-op because ``submit`` fans out everything; this completes a
-        first wave that was interrupted mid-submit). Re-reads the persisted
-        ``stopped`` flag inside the lock before each submit (decision 8); a failed
-        child or a child-submit error stops further submissions and fails the
-        parent (decisions 4/10)."""
+        """Submit not-yet-submitted chunks while the inflight budget allows
+        (T-CDS-RESIL-002): each poll tops the active (queued/running) child
+        count back up to ``budget.cds_chunk_max_inflight`` (0 = no bound —
+        then this only completes a first wave that was interrupted
+        mid-submit). T-CDS-RESIL-006: slot choice, budget, blocked and
+        ``stopped`` checks all run inside a CAS mutate against the freshest
+        plan, and the chosen slot is RESERVED by the winning write before the
+        remote call — two processes polling one parent can never order the
+        same chunk. A failed child or a child-submit error stops further
+        submissions and fails the parent (decisions 4/10)."""
         parent_id = row["request_id"]
         dataset_id, inputs = self._parent_request_inputs(row)
         cost_limit = float(plan.get("cost_limit", 0.0))
+        max_inflight = self.foundation.config.budget.cds_chunk_max_inflight
         while True:
             statuses = await self._child_status_map(plan)
-            if any(s in ("failed", "cancelled") for s in statuses.values()):
-                # decision 4 + codex HIGH: a failed OR (independently) cancelled
-                # child means the aggregate can't complete — stop submitting.
+            # T-CDS-RESIL-006: pick + reserve the next slot in ONE CAS write
+            # against the freshest plan. The old read-then-write gap (two DB
+            # round-trips between "scan" and "commit") was exactly the window
+            # where two processes ordered the same chunk. All the decisions —
+            # stopped, blocked, budget, slot choice — re-run inside the mutate
+            # so a CAS loser re-decides against what actually committed.
+            reserved_idx: int | None = None
+            token = uuid.uuid4().hex  # review r1: reservation owner token
+
+            def _reserve(
+                p: dict[str, Any],
+                _statuses: dict[str, str] = statuses,
+                _tok: str = token,
+            ) -> bool:
+                nonlocal reserved_idx
+                reserved_idx = None
+                if p.get("stopped"):
+                    return False  # decision 8: a concurrent cancel won
+                now = _iso_now()
+                chunks = p.get("chunks", [])
+                # decision 4 + codex HIGH: a failed OR (independently)
+                # cancelled child means the aggregate can't complete — stop
+                # submitting. T-CDS-RESIL-003 relaxation: a failed chunk
+                # awaiting a bounded retry (``retry_pending``) does NOT doom
+                # the aggregate (field report §2.2).
+                for c in chunks:
+                    cid = c.get("child_request_id")
+                    s = _statuses.get(cid) if cid else None
+                    if s == "cancelled" or (
+                        s == "failed" and not c.get("retry_pending")
+                    ):
+                        return False
+                if max_inflight > 0:
+                    active = 0
+                    for c in chunks:
+                        cid = c.get("child_request_id")
+                        s = _statuses.get(cid) if cid else None
+                        # Unknown id = assigned by another process since our
+                        # status sweep — count it active (conservative: worst
+                        # case we skip a slot until the next poll). A fresh
+                        # reservation — including a retry reservation on a
+                        # failed child — is a child about to exist.
+                        if cid and (s in ("queued", "running") or s is None):
+                            active += 1
+                        elif _reservation_fresh(c, now):
+                            active += 1
+                    if active >= max_inflight:
+                        return False  # budget full — a later poll refills
+                for idx2, c in enumerate(chunks):
+                    if not c.get("child_request_id") and not _reservation_fresh(
+                        c, now
+                    ):
+                        c["reserved_at"] = now
+                        c["reserved_by"] = _tok
+                        reserved_idx = idx2
+                        return True
+                return False  # all chunks submitted or reserved
+
+            if not await self._cas_mutate_plan(parent_id, plan, _reserve):
                 return
-            fresh = await self.foundation.persistence.fetch_workflow(parent_id)
-            if fresh is not None and _load_chunk_plan(fresh).get("stopped"):
-                plan["stopped"] = True  # decision 8: a concurrent cancel won
+            if reserved_idx is None:  # pragma: no cover - defensive
                 return
-            nxt = next(
-                (c for c in plan["chunks"] if not c.get("child_request_id")), None
-            )
-            if nxt is None:
-                return  # all chunks submitted
+            slot_idx: int = reserved_idx
+            nxt = plan["chunks"][slot_idx]
             try:
                 child_id = await self._submit_chunk_child(
                     dataset_id=dataset_id,
@@ -2067,6 +3290,9 @@ class CdsBackend(AbstractBackend):
                 # just the first wave); then stop submitting the rest. No
                 # ``stopped`` flag here: that is reserved for user cancel — the
                 # explicit ``failed`` status + terminal short-circuit halt the loop.
+                # Release our reservation first (best-effort) so the slot is not
+                # parked behind the TTL if this parent somehow continues.
+                await self._release_reservation(parent_id, plan, slot_idx, token)
                 record = getattr(exc, "error_record", None)
                 if record is not None:
                     err_json = json.dumps(
@@ -2082,10 +3308,29 @@ class CdsBackend(AbstractBackend):
                         parent_id, "failed"
                     )
                 return
-            nxt["child_request_id"] = child_id
-            await self.foundation.persistence.update_chunk_plan(
-                parent_id, json.dumps(plan, sort_keys=True, default=str)
-            )
+
+            def _assign(
+                p: dict[str, Any],
+                _idx: int = slot_idx,
+                _cid: str = child_id,
+                _tok: str = token,
+            ) -> bool:
+                c = p["chunks"][_idx]
+                if c.get("reserved_by") != _tok:
+                    # Our reservation was reclaimed (we stalled past the
+                    # TTL); the reclaimer owns the slot — do not clobber.
+                    # Our child row, if distinct, is an orphan the adoption
+                    # scan reclaims on a later poll.
+                    return False
+                c["child_request_id"] = _cid
+                c.pop("reserved_at", None)
+                c.pop("reserved_by", None)
+                return True
+
+            # An exhausted assign-CAS leaves the child row committed but the
+            # plan unaware — the adoption scan reclaims it on a later poll
+            # (same shape as a pre-CAS interrupted write).
+            await self._cas_mutate_plan(parent_id, plan, _assign)
 
     async def _advance_chunk_parent(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """Advance + aggregate a chunked parent under the per-parent lock
@@ -2106,14 +3351,30 @@ class CdsBackend(AbstractBackend):
                     ),
                 )
             row = fresh
+            phase_by_child: dict[str, str] = {}
             if row["status"] not in terminal:
                 plan = _load_chunk_plan(row)
-                await self._poll_chunk_children(plan)
-                await self._refill_chunk_children(row, plan)
+                phase_by_child = await self._poll_chunk_children(plan)
+                # RESIL-003 retry runs BEFORE the refill: a chunk owed a
+                # retry is older than any not-yet-ordered chunk, so it gets
+                # first claim on a freed inflight slot. If the retry settled
+                # the parent (a resubmit refused at submit time), skip the
+                # refill — it would order fresh remote jobs under a dead
+                # parent.
+                if not await self._retry_failed_children(row, plan):
+                    await self._refill_chunk_children(row, plan)
                 refetched = await self.foundation.persistence.fetch_workflow(parent_id)
                 if refetched is not None:
                     row = refetched
                 if row["status"] not in terminal:
+                    # Review r1 (codex MEDIUM): compute the terminal
+                    # read-repair from the FRESHEST plan — another process's
+                    # write landing during our child sweep (cleared retry
+                    # mask, final assignment) must settle the parent on THIS
+                    # poll, not the next one. A poll that made no writes of
+                    # its own never CAS-refreshed and would otherwise hold a
+                    # stale view.
+                    plan = _load_chunk_plan(row)
                     statuses = await self._child_status_map(plan)
                     computed = compute_parent_status(plan, statuses)
                     if computed in terminal:
@@ -2149,12 +3410,21 @@ class CdsBackend(AbstractBackend):
             # When the parent is successful the child files are already downloaded
             # and cached (the poll above finalised them), so return the multi-file
             # descriptor set directly — the agent never needs a second download
-            # call (WP3 part-2 feedback). Tolerant: an evicted chunk is flagged in
+            # call (field feedback, part 2). Tolerant: an evicted chunk is flagged in
             # ``evicted_chunk_indices`` rather than raising (download is strict).
             files: list[dict[str, Any]] | None = None
             evicted: list[int] | None = None
+            partial_files: list[dict[str, Any]] | None = None
+            missing: list[int] | None = None
             if status == "successful":
                 files, evicted = await self._parent_chunk_descriptors(
+                    plan, require_all=False
+                )
+            elif status in ("failed", "cancelled"):
+                # T-CDS-RESIL-004: resolve whatever chunks DID land so the
+                # caller can adopt them (the resolver skips everything without
+                # a cached file and reports it as missing).
+                partial_files, missing = await self._parent_chunk_descriptors(
                     plan, require_all=False
                 )
             return _chunk_parent_response(
@@ -2163,6 +3433,9 @@ class CdsBackend(AbstractBackend):
                 plan=plan,
                 child_status=statuses,
                 status=status,
+                partial_files=partial_files,
+                missing_chunk_indices=missing,
+                phase_by_child=phase_by_child,
                 files=files,
                 evicted=evicted,
             )
@@ -2239,7 +3512,9 @@ class CdsBackend(AbstractBackend):
             # T-CDS-EST2-003: terminal — drop the pre-flight cost (no download,
             # so no observation is written for this request).
             self._inflight_costing.pop(request_id, None)
-            await self._record_terminal(request_id, canonical, remote_json=remote_json)
+            await self._record_terminal(
+                request_id, canonical, remote_json=remote_json, client=client
+            )
             # Round-2 MEDIUM-E (codex): build the envelope from the
             # *actual* row state, not from the intended canonical
             # status. If a concurrent cancel won the race, the row is
@@ -2401,6 +3676,27 @@ class CdsBackend(AbstractBackend):
                 )
 
                 stored: Path | None = None
+                # T-CDS-DL-001: resumable transfers use a STABLE part directly
+                # under ``.staging/`` (keyed by the cache hash, NOT this
+                # attempt's uuid dir) so an interrupted download's bytes
+                # survive the task and the next poll's finalise appends from
+                # where it stopped. CancelledError deliberately bypasses the
+                # cleanup below — a lost client/poll is exactly the case the
+                # part exists for; only a GENUINE transfer failure discards it
+                # (the row turns terminally ``failed``, so the bytes are dead).
+                resume = (
+                    self.foundation.config.budget.cds_resume_downloads
+                    and multiurl is not None
+                )
+                # Local review round (HIGH): parts live in a DAY-INDEPENDENT
+                # root — ``cache_zone_for`` partitions by calendar day, and a
+                # part started at 23:58 UTC must be found (resumed, and
+                # eventually swept) after midnight, not silently re-downloaded
+                # from zero while the old day's bytes rot unreachable.
+                staging_root = self.foundation.cache.staging_root_for("cds")
+                part_name = _part_basename(request_id)
+                part_path = staging_root / part_name
+                meta_path = staging_root / f"{part_name}.meta.json"
                 try:
                     # Download to staging only — do NOT publish to the
                     # canonical cache yet. Round-3 MEDIUM (codex):
@@ -2409,11 +3705,132 @@ class CdsBackend(AbstractBackend):
                     # under the same cache_key (force_refresh case),
                     # then "invalidate" it on race-loss, destroying
                     # the older successful workflow's result.
-                    await asyncio.to_thread(
-                        client.client.download_results,
-                        request_id,
-                        str(target_path),
-                    )
+                    location: str | None = None
+                    expected_size = -1
+                    if resume:
+                        _sweep_stale_parts(
+                            staging_root,
+                            keep=frozenset(self._part_transfers),
+                        )
+                        # Resume is BEST-EFFORT: if the Results handle (URL +
+                        # expected size) cannot be resolved, degrade to the
+                        # plain SDK download rather than failing the row — the
+                        # plain path re-raises with the established error
+                        # semantics if the service is genuinely down.
+                        # ``except Exception`` does not catch CancelledError
+                        # (BaseException), so cancellation still propagates.
+                        try:
+                            results = await asyncio.to_thread(
+                                _fetch_results_handle,
+                                client.client,
+                                request_id,
+                            )
+                            # Strict shape check — the SDK returns a str URL
+                            # and an int byte count; anything else (missing
+                            # asset size, API drift) is an unusable handle.
+                            raw_size = results.content_length
+                            raw_location = results.location
+                            if not (
+                                isinstance(raw_size, int)
+                                and raw_size >= 0
+                                and isinstance(raw_location, str)
+                            ):
+                                raise TypeError(
+                                    "results handle lacks a usable "
+                                    "location/content_length"
+                                )
+                            expected_size = raw_size
+                            location = raw_location
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "resume handle unavailable; falling back to "
+                                "non-resumable download",
+                                extra={"request_id": request_id},
+                            )
+                            resume = False
+                    if resume and location is not None:
+                        # Adopt a still-live writer left behind by a cancelled
+                        # task (codex HIGH-3) — never start a second appender
+                        # on the same part. A finished future's outcome is
+                        # consumed here (exception retrieved) and replaced.
+                        part_key = str(part_path)
+                        prior_failed = False
+                        transfer = self._part_transfers.get(part_key)
+                        if transfer is not None and transfer.done():
+                            if not transfer.cancelled():
+                                # Review round 4 (codex MEDIUM): a transfer
+                                # that RAISED disowns its bytes — the library
+                                # can fail after the last byte, and a
+                                # complete-LOOKING part from a failed
+                                # transfer must be re-fetched, not promoted.
+                                prior_failed = transfer.exception() is not None
+                            self._part_transfers.pop(part_key, None)
+                            transfer = None
+                        if transfer is None:
+                            if prior_failed:
+                                # Only a COMPLETE-looking part is suspect —
+                                # promoting it would skip the re-download
+                                # entirely. An incomplete prefix from a
+                                # failed transfer is still a valid resume
+                                # point (writes are append-only; the error
+                                # merely stopped them), and discarding it
+                                # would gut resume for ordinary network
+                                # blips.
+                                try:
+                                    looks_complete = (
+                                        part_path.stat().st_size
+                                        == expected_size
+                                    )
+                                except OSError:
+                                    looks_complete = False
+                                if looks_complete:
+                                    with contextlib.suppress(OSError):
+                                        part_path.unlink()
+                            _validate_or_reset_part(
+                                part_path, meta_path, expected_size, location
+                            )
+                            # Review round 3 (codex MEDIUM): a previous daemon
+                            # writer may have FINISHED the file after its
+                            # awaiter died. Re-downloading a complete part
+                            # trips multiurl's existing<remote assertion and
+                            # would fail a perfectly good result — promote it
+                            # directly instead.
+                            try:
+                                already_complete = (
+                                    part_path.stat().st_size == expected_size
+                                )
+                            except OSError:
+                                already_complete = False
+                            if not already_complete:
+                                transfer = _spawn_daemon_transfer(
+                                    location,
+                                    part_path,
+                                    expected_size,
+                                    self._transfer_slots,
+                                )
+                                self._part_transfers[part_key] = transfer
+                        if transfer is not None:
+                            try:
+                                # shield: cancelling THIS task must not cancel
+                                # the shared transfer future — the worker
+                                # thread keeps running either way, and the
+                                # pending future is what the next poll adopts.
+                                await asyncio.shield(transfer)
+                            finally:
+                                if transfer.done():
+                                    self._part_transfers.pop(part_key, None)
+                        # Complete and size-checked: promote into this
+                        # attempt's staging dir so the sniff/verify/store
+                        # pipeline below runs unchanged.
+                        part_path.replace(target_path)
+                        with contextlib.suppress(OSError):
+                            meta_path.unlink()
+                    else:
+                        await asyncio.to_thread(
+                            client.client.download_results,
+                            request_id,
+                            str(target_path),
+                        )
                 except CopernicusMcpError as exc:
                     error_record_json = self._serialise_error_record(exc)
                     await self.foundation.persistence.update_workflow_error_if_pending(
@@ -2423,6 +3840,9 @@ class CdsBackend(AbstractBackend):
                         if target_path.exists():
                             target_path.unlink()
                         staging.rmdir()
+                    with contextlib.suppress(OSError):
+                        part_path.unlink(missing_ok=True)
+                        meta_path.unlink(missing_ok=True)
                     raise
                 except Exception as exc:  # noqa: BLE001
                     wrapped = self._wrap_sdk_error(exc, op="download")
@@ -2434,6 +3854,9 @@ class CdsBackend(AbstractBackend):
                         if target_path.exists():
                             target_path.unlink()
                         staging.rmdir()
+                    with contextlib.suppress(OSError):
+                        part_path.unlink(missing_ok=True)
+                        meta_path.unlink(missing_ok=True)
                     raise wrapped from exc
 
                 # T-CDS-018 round-2 (codex-MED1): ECMWF may return a
@@ -2469,6 +3892,60 @@ class CdsBackend(AbstractBackend):
                             staging.rmdir()
                         raise wrapped from exc
                     target_path = renamed
+
+                # T-CDS-MODEL-002: for the single-model-execution datasets,
+                # verify the delivered archive actually carries the requested
+                # model(s) BEFORE the row can turn successful — the Rook
+                # backend has delivered the first model of a list silently,
+                # and a wrong file stored under this cache key would satisfy
+                # every future dedupe for the real request. A mismatch fails
+                # the row and discards the staged file; it is never retried
+                # (resubmitting the identical request re-delivers the same
+                # wrong content).
+                if self.foundation.config.budget.cds_delivery_check_enabled:
+                    delivery_dataset = (
+                        _dataset_id_from_workflow_row(row) if row is not None else None
+                    )
+                    delivery_axes = SINGLE_MODEL_EXECUTION_AXES.get(
+                        delivery_dataset or ""
+                    )
+                    missing_models = (
+                        await asyncio.to_thread(
+                            _missing_model_tokens,
+                            target_path,
+                            row_inputs,
+                            delivery_axes,
+                        )
+                        if delivery_axes
+                        else None
+                    )
+                    if missing_models:
+                        mismatch = BackendError(
+                            f"delivery for {request_id!r} lacks requested "
+                            f"model(s) {missing_models!r}",
+                            record=build_error_record(
+                                "BackendError",
+                                message=self.foundation.sanitiser.sanitise(
+                                    "The delivered archive does not contain "
+                                    f"the requested model(s) {missing_models!r}"
+                                    " — the service executed a different "
+                                    "model. The file was discarded; nothing "
+                                    "was cached. Report to ECMWF support "
+                                    "with the request id if this recurs."
+                                ),
+                                error_subclass="delivered_content_mismatch",
+                                recovery_action="report_to_administrator",
+                            ),
+                        )
+                        error_record_json = self._serialise_error_record(mismatch)
+                        await self.foundation.persistence.update_workflow_error_if_pending(
+                            request_id, "failed", error_record_json
+                        )
+                        with contextlib.suppress(OSError):
+                            if target_path.exists():
+                                target_path.unlink()
+                            staging.rmdir()
+                        raise mismatch
 
                 # Round-1 HIGH-2 + Round-3 MEDIUM (codex): commit
                 # conditionally; only publish to the canonical cache
@@ -2599,12 +4076,50 @@ class CdsBackend(AbstractBackend):
                         leftover.unlink()
                     staging.rmdir()
 
+    async def _sibling_chunk_succeeded(self, request_id: str) -> bool:
+        """True iff ``request_id`` is a chunk child with a SUCCESSFUL sibling
+        that vouches for its request shape — the corroboration signal for the
+        capacity classifier (T-CDS-RESIL-001).
+
+        Review M3: "vouches" is per-chunk, not per-parent. In a model fan-out
+        a successful model-A chunk proves nothing about model-B (the shapes
+        differ), so corroboration requires a sibling sharing the same
+        non-calendar overrides (``sibling_corroborates``). Calendar-only
+        plans keep the original any-sibling rule via the same predicate."""
+        row = await self.foundation.persistence.fetch_workflow(request_id)
+        parent_id = row.get("parent_request_id") if row is not None else None
+        if not parent_id:
+            return False
+        children = await self.foundation.persistence.list_child_workflows(parent_id)
+        statuses = {c["request_id"]: c["status"] for c in children}
+        parent = await self.foundation.persistence.fetch_workflow(parent_id)
+        chunks = (_load_chunk_plan(parent) if parent is not None else {}).get(
+            "chunks", []
+        )
+        entry = next(
+            (
+                c
+                for c in chunks
+                if c.get("child_request_id") == request_id
+                or request_id in (c.get("superseded_child_ids") or [])
+            ),
+            None,
+        )
+        if entry is not None:
+            return sibling_corroborates(entry, chunks, statuses)
+        # No plan entry (edge: plan write lost) — the legacy any-sibling rule.
+        return any(
+            c["request_id"] != request_id and c["status"] == "successful"
+            for c in children
+        )
+
     async def _record_terminal(
         self,
         request_id: str,
         status: str,
         *,
         remote_json: dict[str, Any],
+        client: Any = None,
     ) -> None:
         """Persist a row as failed / cancelled with sanitised error
         details when the SDK reports a terminal non-success state.
@@ -2669,6 +4184,45 @@ class CdsBackend(AbstractBackend):
                 return
 
             sanitised_message = self.foundation.sanitiser.sanitise(raw_str)
+            # T-CDS-RESIL-001: an empty-log failure (no message in any known
+            # slot) is ambiguous between "request is wrong" and "service
+            # refused it". Classify it with corroboration — the job's own
+            # remote status being ``rejected``, or a successful sibling chunk —
+            # and only then mark the record retryable. Otherwise it stays
+            # "unknown": empty-log content failures exist, and auto-retrying
+            # one is a slower way to fail.
+            #
+            # Do NOT reintroduce a census of jobs in flight here. Three review
+            # rounds killed every variant: our own submissions are paced per
+            # retrieval so the account total tracks how busy WE are, and the
+            # one refusal on record was our own burst against a per-dataset
+            # queue cap with nothing else on the account, so the foreign
+            # remainder cannot see it either. See ``capacity.py``.
+            classification_context: dict[str, Any] | None = None
+            is_capacity = False
+            if not candidates:
+                sibling_ok = await self._sibling_chunk_succeeded(request_id)
+                # ``rejected`` is the store's ADMISSION CONTROL turning the job
+                # away before it ran — a refusal about timing, never a verdict
+                # on the data. It is first-party and exact, unlike any census
+                # of jobs in flight: the recorded CORDEX refusal was our OWN
+                # burst against a per-dataset queue cap with nothing else on
+                # the account, so neither the account total nor the foreign
+                # remainder could have identified it.
+                remote_status = str(remote_json.get("status", "")).strip().lower()
+                rejected = remote_status == "rejected"
+                classification = classify_remote_failure(
+                    empty_log=True,
+                    sibling_succeeded=sibling_ok,
+                    remote_status_rejected=rejected,
+                )
+                is_capacity = classification == "capacity_suspected"
+                classification_context = {
+                    "class": classification,
+                    "empty_log": True,
+                    "sibling_succeeded": sibling_ok,
+                    "remote_status": remote_status or None,
+                }
             # T-CDS-011.3: surface the structured CDS job-state JSON in
             # ``context.backend_diagnostics`` so callers can distinguish
             # "too many concurrent jobs" from "request too large" from
@@ -2704,10 +4258,15 @@ class CdsBackend(AbstractBackend):
                         )
                     ):
                         diagnostics[key] = original
+            error_context: dict[str, Any] = {"backend_diagnostics": diagnostics}
+            if classification_context is not None:
+                error_context["failure_classification"] = classification_context
             err_record = build_error_record(
                 "BackendError",
                 message=sanitised_message,
                 error_subclass="remote_job_failed",
+                retryable=is_capacity,
+                automatic_retry_recommended=is_capacity,
                 recovery_action="retry_with_modification",
                 # T-CDS-011.4 + T-CDS-014: CDS / EWDS return
                 # ``remote_job_failed`` with no server-side log for
@@ -2737,9 +4296,13 @@ class CdsBackend(AbstractBackend):
                     "days/weeks stale — call cds_apply_constraints("
                     "dataset_id, inputs={}) for the LIVE server-side "
                     "valid values verbatim from the CDS engine before "
-                    "blindly retrying."
+                    "blindly retrying. Machine-readable: when this record "
+                    "carries retryable=true / automatic_retry_recommended="
+                    "true, the failure was classified capacity_suspected "
+                    "(see context.failure_classification) — resubmit the "
+                    "IDENTICAL request after waiting a few minutes."
                 ),
-                context={"backend_diagnostics": diagnostics},
+                context=error_context,
             )
             error_record_json = err_record.model_dump_json()
             await self.foundation.persistence.update_workflow_error_if_pending(
@@ -3010,7 +4573,11 @@ class CdsBackend(AbstractBackend):
             hint = (
                 "Visit the recovery_url (and any additional URLs in "
                 "context.missing_policies), accept each licence, and "
-                "then re-submit the same request."
+                "then re-submit the same request. In-band alternative "
+                "(T-CDS-LICENCE-001): cds_list_licences shows the ids "
+                "and revisions; if the operator enabled it, "
+                "cds_accept_licence (or the CLI `cds accept-licence "
+                "<id> <revision>`) accepts without the browser."
             )
         else:
             names = "(server did not enumerate policies)"
@@ -3019,7 +4586,10 @@ class CdsBackend(AbstractBackend):
                 "enumerate the missing policies in a parseable form. "
                 "Open the dataset's page on the CDS / ADS / EWDS web UI, "
                 "accept all required licences in the licence tab, and "
-                "re-submit."
+                "re-submit. In-band alternative: compare "
+                "cds_list_licences' available-vs-accepted sets, then "
+                "cds_accept_licence / CLI `cds accept-licence` if the "
+                "operator enabled it."
             )
         record = build_error_record(
             "TermsNotAcceptedError",
@@ -3166,6 +4736,12 @@ class CdsBackend(AbstractBackend):
                     context={"evicted_chunk_indices": evicted, "chunked": True},
                 ),
             )
+        result = _parent_multifile_result(descriptors)
+        # Reaching here means every chunk file resolved (the eviction branch
+        # above raises), so the set is whole. State it explicitly: ``complete``
+        # must carry the same meaning on both success surfaces, or a caller
+        # that checks it after ``check_status`` finds nothing here.
+        result["complete"] = True
         return {
             "status": "successful",
             "cache_hit": True,
@@ -3174,7 +4750,7 @@ class CdsBackend(AbstractBackend):
             "cache_key": cache_key,
             "chunked": True,
             "chunk_count": len(descriptors),
-            "result": _parent_multifile_result(descriptors),
+            "result": result,
         }
 
     async def fetch_result(self, request_id: str, target: Path) -> dict[str, Any]:
@@ -3272,6 +4848,7 @@ class CdsBackend(AbstractBackend):
             child_dl = self._downloads.pop(cid, None)
             if child_dl is not None and not child_dl.done():
                 child_dl.cancel()
+            self._reap_part_transfer(cid)
         # 2. Best-effort remote delete (may run to completion regardless).
         if self._auth_adapter is None:
             return
@@ -3307,11 +4884,16 @@ class CdsBackend(AbstractBackend):
                     "chunked": True,
                 }
             plan = _load_chunk_plan(row)
-            plan["stopped"] = True
+
+            # T-CDS-RESIL-006: CAS loop — the stopped flag must land WITHOUT
+            # clobbering a concurrent poller's committed assignments; a loss
+            # re-reads and re-applies ``stopped`` onto the freshest plan.
+            def _mark_stopped(p: dict[str, Any]) -> bool:
+                p["stopped"] = True
+                return True
+
             with contextlib.suppress(Exception):
-                await self.foundation.persistence.update_chunk_plan(
-                    parent_id, json.dumps(plan, sort_keys=True, default=str)
-                )
+                await self._cas_mutate_plan(parent_id, plan, _mark_stopped)
             dataset_id = _dataset_id_from_workflow_row(row) or ""
             await self._cancel_chunk_children(dataset_id, plan)
             await self.foundation.persistence.update_workflow_status_if_pending(
@@ -3364,6 +4946,7 @@ class CdsBackend(AbstractBackend):
         dl = self._downloads.pop(request_id, None)
         if dl is not None and not dl.done():
             dl.cancel()
+        self._reap_part_transfer(request_id)
         # T-CDS-EST2-003 + codex Tier-A MEDIUM: drop the pre-flight cost ONLY if this
         # cancel won the terminal-state race. If a finalizer beat us to ``successful``,
         # leave the entry — its ``_finalise_successful`` ``finally`` pops it AFTER

@@ -154,7 +154,7 @@ from copernicus_mcp.backends.cds.calibration import load_seed  # noqa: E402
 
 def test_load_seed_bundled_has_calibration_entries() -> None:
     """The shipped seed (T-CDS-EST2-005, from developer history) is populated;
-    WP3 case A (XCO2 L3 OBS4MIPS) is calibrated out-of-the-box."""
+    field case A (XCO2 L3 OBS4MIPS) is calibrated out-of-the-box."""
     seed = load_seed()
     assert any(ds == "satellite-carbon-dioxide" for (ds, _sig) in seed)
     assert any(ds == "projections-cmip6" for (ds, _sig) in seed)

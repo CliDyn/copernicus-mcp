@@ -552,7 +552,7 @@ def _progress_line(payload: dict[str, Any]) -> str | None:
     chunks: dict[str, Any] = chunks_raw if isinstance(chunks_raw, dict) else {}
     extra = [
         f"{k} {chunks[k]}"
-        for k in ("running", "queued", "failed")
+        for k in ("running", "downloading", "retrying", "queued", "failed")
         if isinstance(chunks.get(k), int) and chunks[k]
     ]
     suffix = f" ({', '.join(extra)})" if extra else ""
@@ -946,23 +946,41 @@ def cds_submit(
 
 @cds_app.command("check-status")
 def cds_check_status(
-    request_id: str = typer.Argument(...),
+    request_ids: list[str] = typer.Argument(...),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Look up the status of an in-flight or completed CDS request."""
+    """Look up the status of one or more CDS requests (T-CDS-OPS-002: pass
+    several ids to poll a whole part-set in one process instead of one CLI
+    spawn per id per poll)."""
 
-    async def _go() -> dict[str, Any]:
+    async def _go() -> list[dict[str, Any]]:
         async with _build_orchestrator_for_cli() as orch:
-            return await orch.run(
-                backend="cds",
-                operation="poll",
-                params={"request_id": request_id},
-            )
+            return [
+                await orch.run(
+                    backend="cds",
+                    operation="poll",
+                    params={"request_id": rid},
+                )
+                for rid in request_ids
+            ]
 
-    envelope = _run(_go())
-    if "error" in envelope:
-        _handle_error(envelope, json_out=json_out)
-    _emit(_unwrap_result(envelope), json_out=json_out, title=request_id)
+    envelopes = _run(_go())
+    if len(request_ids) == 1:
+        envelope = envelopes[0]
+        if "error" in envelope:
+            _handle_error(envelope, json_out=json_out)
+        _emit(_unwrap_result(envelope), json_out=json_out, title=request_ids[0])
+        return
+    # Batch: per-id errors stay inline — one bad id must not fail the sweep.
+    results = [
+        env["error"] if "error" in env else _unwrap_result(env)
+        for env in envelopes
+    ]
+    _emit(
+        {"results": results, "count": len(results)},
+        json_out=json_out,
+        title=f"{len(results)} requests",
+    )
 
 
 @cds_app.command("wait")
@@ -1065,6 +1083,64 @@ def cds_download(
     if "error" in envelope:
         _handle_error(envelope, json_out=json_out)
     _emit(_unwrap_result(envelope), json_out=json_out, title=request_id)
+
+
+@cds_app.command("licences")
+def cds_licences(
+    dataset_id: str | None = typer.Option(
+        None, "--dataset-id", help="Route to this dataset's store (CDS/ADS/EWDS)."
+    ),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List the store's dataset licences and which ones this account accepted
+    (T-CDS-LICENCE-001). Compare the two sets to find what a
+    TermsNotAcceptedError is missing, then accept on the web page — or with
+    ``cds accept-licence`` right here."""
+
+    async def _go() -> dict[str, Any]:
+        async with _build_orchestrator_for_cli() as orch:
+            return await orch.run(
+                backend="cds",
+                operation="list_licences",
+                params={"dataset_id": dataset_id},
+            )
+
+    envelope = _run(_go())
+    if "error" in envelope:
+        _handle_error(envelope, json_out=json_out)
+    _emit(_unwrap_result(envelope), json_out=json_out, title="licences")
+
+
+@cds_app.command("accept-licence")
+def cds_accept_licence_cmd(
+    licence_id: str = typer.Argument(..., help="Licence id from `cds licences`."),
+    revision: int = typer.Argument(..., help="Revision from `cds licences`."),
+    dataset_id: str | None = typer.Option(
+        None, "--dataset-id", help="Route to this dataset's store (CDS/ADS/EWDS)."
+    ),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Accept a dataset licence in-band (T-CDS-LICENCE-001). Acceptance
+    legally binds the account owner — running this command IS the operator's
+    authorisation, which is why the CLI needs no config flag (the MCP tool
+    surface does: ``budget.cds_licence_accept_enabled``)."""
+
+    async def _go() -> dict[str, Any]:
+        async with _build_orchestrator_for_cli() as orch:
+            return await orch.run(
+                backend="cds",
+                operation="accept_licence",
+                params={
+                    "licence_id": licence_id,
+                    "revision": revision,
+                    "dataset_id": dataset_id,
+                },
+            )
+
+    envelope = _run(_go())
+    if "error" in envelope:
+        _handle_error(envelope, json_out=json_out)
+    _emit(_unwrap_result(envelope), json_out=json_out, title=licence_id)
 
 
 @cds_app.command("cancel")
