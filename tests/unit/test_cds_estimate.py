@@ -125,7 +125,7 @@ async def test_estimate_wires_costing_into_envelope(foundation, monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_estimate_whole_file_cost_one_is_unknown(foundation, monkeypatch) -> None:
-    """WP3 case A: a whole-file product (cost==1, single field) is honestly
+    """Field case A: a whole-file product (cost==1, single field) is honestly
     reported as size-unknown rather than a confident under-estimate."""
     from copernicus_mcp.backends.cds.costing import CostingResult
 

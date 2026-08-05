@@ -164,6 +164,32 @@ These are convenient one-line overrides without a config file:
 | `COPERNICUS_MCP_LOG_LEVEL`           | `server.log_level`            |
 | `COPERNICUS_MCP_CACHE_DIR`           | `storage.cache_directory`     |
 | `COPERNICUS_MCP_STATE_DB`            | `storage.state_database`      |
+| `COPERNICUS_MCP_CDS_CHUNK_MAX_INFLIGHT` | `budget.cds_chunk_max_inflight` |
+| `COPERNICUS_MCP_CDS_CHUNK_RETRY_LIMIT`  | `budget.cds_chunk_retry_limit`  |
+| `COPERNICUS_MCP_CDS_CHUNK_RETRY_BACKOFF_SECONDS` | `budget.cds_chunk_retry_backoff_seconds` |
+| `COPERNICUS_MCP_CDS_RESUME_DOWNLOADS` | `budget.cds_resume_downloads` |
+
+### Pacing large split requests
+
+When a request exceeds the dataset's per-request cost limit it is split into
+parts. The parts are submitted a few at a time rather than all at once, because
+the Climate Data Store throttles an account to a small number of concurrent
+jobs and refuses the excess instead of queueing it.
+
+- `budget.cds_chunk_max_inflight` (default `5`) — how many parts may be in
+  flight at once. `0` restores the old submit-everything behaviour.
+- `budget.cds_chunk_retry_limit` (default `3`) and
+  `budget.cds_chunk_retry_backoff_seconds` (default `120`) — a part the service
+  refused for capacity is re-submitted this many times, spaced this far apart.
+  A part that failed because the request itself is wrong is never retried.
+
+### Resumable result transfers
+
+- `budget.cds_resume_downloads` (default `true`) — result files download into a
+  stable partial file that survives the process: an interrupted transfer (a
+  poll that exited, a killed server) is resumed by the next status check from
+  where it stopped, instead of restarting from byte zero. Abandoned partials
+  are swept after 7 days. `false` restores per-attempt throwaway staging.
 
 Nested fields can also be set via `COPERNICUS_MCP_<SECTION>__<FIELD>` (double underscore between section and field), e.g. `COPERNICUS_MCP_STORAGE__CACHE_DIRECTORY=/tmp/copernicus-mcp-cache`.
 
@@ -200,6 +226,30 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\copernicus-mcp"
 ```
 
 To move them off the default location, set `COPERNICUS_MCP_CACHE_DIR` / `COPERNICUS_MCP_STATE_DB`, pass `--cache-dir` to the CLI, or pin `storage.cache_directory` / `storage.state_database` in `config.yaml`.
+
+### Network home directories (HPC clusters)
+
+On many clusters `$HOME` is NFS (or `/work` is Lustre), and SQLite's WAL journal is
+unreliable there: after any unclean shutdown (a killed job, a crashed agent) the stale
+`state.db-wal`/`state.db-shm` side files can make the next server start hang on the WAL
+open — the MCP client's connect then times out and the agent comes up without tools,
+silently.
+
+The server defends itself in three layers, in order:
+
+1. **Network filesystems are detected** (Linux, via the mounts table) and the database
+   opens directly in the DELETE journal mode — safe on NFS/Lustre, and entirely adequate
+   for a single-writer stdio server.
+2. When detection is inconclusive, the WAL open runs under a **bounded timeout**
+   (`storage.state_db_pragma_timeout_seconds`, default 15 s). On a lock error or
+   timeout, side files untouched for 15+ minutes are **renamed aside** (never deleted)
+   and WAL is retried once; failing that the server falls back to DELETE mode.
+3. If nothing opens, the server fails **loudly** with a canonical error naming the
+   database path and the `COPERNICUS_MCP_STATE_DB` remedy — it never hangs.
+
+For per-run isolation you can also point `COPERNICUS_MCP_STATE_DB` at a node-local or
+per-run file. Keep the database on a **shared** path when one process submits and a
+different node polls — job recovery and cross-node status reads go through this file.
 
 The cache enforces `cache_size_limit_gb` after every successful download via the `cache_eviction_policy` (LRU in Iteration 1). Layer 2 Parquet indices are small (sub-100 KB for INSITU; ~20–50 MB for CORA/EasyCORA) and not subject to LRU eviction in Iter 1 — they live under `marine_indices/` separately from the bundle cache.
 

@@ -847,6 +847,23 @@ def _is_timeseries_product(record: dict[str, Any]) -> bool:
     return isinstance(keywords, list) and "Data type: Time-series" in keywords
 
 
+def accepted_input_keys(dataset_id: str) -> set[str] | None:
+    """The input-key set a dataset's retrieve form accepts, from the bundled
+    constraints snapshot — the SAME augmented view ``describe`` serves as
+    ``available_inputs``, so the submit-time key check (T-CDS-KEYCHECK-001)
+    and the agent-facing documentation can never disagree. The ARCO
+    ``*-timeseries`` products get the synthetic ``location`` key the upstream
+    machine-readable form omits (T-TS-007). ``None`` when the dataset has no
+    usable snapshot entry (callers fail open)."""
+    constraints = load_constraints().get(dataset_id)
+    if not isinstance(constraints, dict) or not constraints:
+        return None
+    keys = set(constraints)
+    if dataset_id.endswith("-timeseries"):
+        keys.add("location")
+    return keys
+
+
 def describe(dataset_id: str) -> dict[str, Any]:
     """Return the full STAC record for ``dataset_id``.
 

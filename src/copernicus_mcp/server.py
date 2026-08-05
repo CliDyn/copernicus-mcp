@@ -114,7 +114,13 @@ def build_server(
         registry.is_configured("cds")
         and foundation.credential_resolver.resolve("cds") is not None
     ):
-        register_cds_tools(server, orchestrator=orchestrator)
+        register_cds_tools(
+            server,
+            orchestrator=orchestrator,
+            licence_accept_enabled=(
+                foundation.config.budget.cds_licence_accept_enabled
+            ),
+        )
 
     @server.tool(
         name="copernicus_mcp_status",

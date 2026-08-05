@@ -4,7 +4,7 @@
 
 - **Diagnostic** (always registered): `copernicus_mcp_status`, `copernicus_mcp_list_jobs`.
 - **CMEMS** (eleven tools, registered when the `cmems` backend is enabled): `marine_search_groups`, `marine_search_products`, `marine_search_datasets`, `marine_describe_dataset`, `marine_get_coordinates`, `marine_estimate_subset`, `marine_subset_dataset`, `marine_list_files`, `marine_get_files`, `marine_check_status`, `marine_cancel_subset`. The first three implement the three-step hierarchical pipeline (T-CMEMS-HIER-005): start with `marine_search_groups` for free-text routing, drill into `marine_search_products` with the chosen `group_ids`, then resolve datasets via `marine_search_datasets` with the chosen `product_ids` (plus optional `bbox` / `time_range`). The pipeline is the default path for any agentic query; the bare `marine_search_datasets` (`keyword=` only) flat path stays available for known dataset ids.
-- **CDS / ADS / EWDS** (eight tools, registered when the `cds` backend is enabled AND credentials resolve): `cds_search_datasets`, `cds_describe_dataset`, `cds_apply_constraints`, `cds_estimate_request`, `cds_submit_request`, `cds_check_request_status`, `cds_download_request_result`, `cds_cancel_request`.
+- **CDS / ADS / EWDS** (nine tools, registered when the `cds` backend is enabled AND credentials resolve): `cds_search_datasets`, `cds_describe_dataset`, `cds_apply_constraints`, `cds_estimate_request`, `cds_submit_request`, `cds_check_request_status`, `cds_download_request_result`, `cds_cancel_request`, `cds_list_licences` — plus `cds_accept_licence` as a tenth when the operator opts in via `budget.cds_licence_accept_enabled`.
 
 All tools share these conventions:
 
@@ -33,6 +33,21 @@ None.
       "enabled_in_config": true,
       "configured": true,
       "credential_source": "env"   // env | config_file | secret_manager | explicit | missing
+    },
+    "cds": {
+      "registered": true, "enabled_in_config": true, "configured": true,
+      "credential_source": "config_file",
+      // Live count of the ACCOUNT's in-flight remote jobs (everything the
+      // account has queued/running, not just this server's). "truncated":
+      // true means the page filled — read the count as "at least". On any
+      // probe failure the field is the string "unavailable" (with an
+      // "active_remote_jobs_reason") — the status tool answers regardless.
+      // Omitted entirely when no CDS credentials resolve.
+      "active_remote_jobs": {
+        "count": 3,
+        "by_status": {"accepted": 2, "running": 1},
+        "fetched_at": "2026-08-05T12:00:00Z"
+      }
     }
   },
   "cache": {
@@ -745,7 +760,7 @@ Slim STAC item: `{id, description, extent, keywords, license, links, providers, 
 
 `available_inputs` lists every parameter the dataset accepts and the valid values for each (`data_format: [netcdf, grib]`, `download_format: [zip, unarchived]`, the canonical `variable` enum, …). For the ARCO `*-timeseries` products (e.g. `reanalysis-era5-land-timeseries`) it also carries a synthetic `location: {latitude, longitude}` entry — those products take a single point, not an `area`/grid, and can emit `data_format: csv`. Compose your `cds_submit_request` using only these field names and values; the legacy `format: …` key was deprecated by the new CDS processes engine and is silently rejected by the server.
 
-**Caveat — `available_inputs` is a snapshot.** It ships in the bundled catalogue refreshed manually (every few weeks). CDS occasionally rotates field names / adds new constraints. If a submit composed from this snapshot fails with `remote_job_failed`, call `cds_apply_constraints(dataset_id, inputs={})` for the LIVE server-side valid values verbatim — they are the canonical source of truth.
+**Caveat — `available_inputs` is a snapshot.** It ships in the bundled catalogue refreshed manually (every few weeks). CDS occasionally rotates field names / adds new constraints. If a submit composed from this snapshot fails with `remote_job_failed`, call `cds_apply_constraints(dataset_id, inputs={})` for the LIVE server-side valid values verbatim — they are the canonical source of truth. (Mind that tool's own caveats: for some datasets the constraints response is a flat, non-narrowing union, so the real submit remains the decisive validator.)
 
 ### Errors
 
@@ -761,6 +776,12 @@ Use this to compose a submit request step-by-step instead of guessing field name
 - You don't know whether a field accepts the legacy `format` or modern `data_format` / `download_format` keys (this endpoint uses the modern keys exclusively).
 - You picked a `variable` and want to know whether it accepts a time range (auxiliary time-invariant variables like EFAS `elevation` will NOT return `hyear/hmonth/hday/time` in the response — that's the signal to drop those fields).
 - You want to confirm a dataset's required additional fields (e.g. EFAS v5.0 needs `hydrological_model: [lisflood]`).
+
+**Caveats (observed on live datasets):**
+
+- Some datasets return a **non-narrowing flat union**: `valid_remaining` echoes the full vocabulary no matter what you pin, and values coupled to your selection may be silently omitted. Per-field membership does **not** guarantee the combination is retrievable.
+- Cross-field couplings (e.g. a spatial grid that only exists for certain temporal aggregations) surface only when **all related axes are pinned together**. When probing whether a combination exists, pin variable + product type + spatial + temporal + version in the same call — narrowing one field at a time can pass on every step and still fail at submit.
+- This live endpoint and the bundled `cds_describe_dataset` snapshot can be different vintages; for vocabulary this endpoint wins. Either way the **real submit is the decisive validator** — treat a passing constraints probe as advisory, not as proof.
 
 ### Inputs
 
@@ -807,6 +828,10 @@ bytes-per-unit factor, and learns from every completed download.
 ## `cds_submit_request`
 
 Queue a retrieve. Returns immediately after the server acknowledges; downloads happen via `cds_download_request_result` once status reaches `successful`.
+
+**Unknown input keys are rejected up front.** The CDS server accepts keys a dataset does not use and silently ignores them — the request then delivers the wrong selection, or fails minutes later with an empty log. Keys are validated against the dataset's known input set (the same source as `cds_describe_dataset`'s `available_inputs`, which includes `area`/`data_format`/… where the dataset genuinely accepts them). A dataset missing from the bundled snapshot is not checked; pass `__options.skip_input_validation=true` if a key is newly added upstream and the snapshot is stale.
+
+**Multi-model requests fan out on `projections-cmip6` and `projections-cordex-domains-single-levels`.** Those datasets execute ONE model per request — a list is accepted by the API but only the first model is delivered, silently. A request naming several models (for CORDEX: several `gcm_model`/`rcm_model` values) therefore always becomes a chunked parent with one part per model combination, and every downloaded part is verified to actually contain its requested model before it is cached (`delivered_content_mismatch` otherwise). Other datasets are untouched.
 
 ### Inputs
 
@@ -884,11 +909,14 @@ A single PAT works across all three stores (research §6.8.2). The catalogue tag
 
 ## `cds_check_request_status`
 
-Look up the workflow row for a request_id.
+Look up the workflow row for a request_id — or several at once.
 
 ### Inputs
 
-- `request_id` (string, required).
+Exactly one of:
+
+- `request_id` (string) — single mode; the envelope below.
+- `request_ids` (list of strings, each non-empty) — batch mode: poll several requests in one call with bounded concurrency (at most 4 in flight). Returns `{"results": [...], "count": N}` preserving input order. A bad id yields an inline `{"request_id": "<that id>", "error": {...}}` entry and does not fail the batch. One call for a 21-part window instead of 21 separate invocations.
 
 ### Output
 
@@ -900,6 +928,8 @@ Look up the workflow row for a request_id.
 
 When the CDS job has finished server-side and the result file is being fetched, `check_status` returns `{status: "running", phase: "downloading"}` **immediately** rather than blocking on the transfer — the download runs in the background, so the agent stays free. Keep polling; a later poll returns `successful` with the `filepath`. (A small file may finish within a brief inline grace and return `successful` in one poll, so `phase` is absent there.)
 
+> **Transfers are resumable across polls and processes.** The staged download survives the process that started it: if a poll (or the whole server) exits mid-transfer, the partial bytes are kept, and the next `check_status` for the same request appends from where the previous one stopped instead of restarting from zero. Even short-lived one-shot pollers — a fresh CLI invocation per poll — therefore make forward progress on a large file; each poll accumulates more bytes. Still, when you see `phase: "downloading"` the slow part (the queue wait) is over, and one long-running `copernicus-mcp cds wait <request_id>` finishes the transfer fastest — in a single uninterrupted pass rather than poll-sized instalments. Abandoned partial transfers are cleaned up automatically after a week; set `budget.cds_resume_downloads: false` to restore per-attempt throwaway staging.
+
 ### Output (chunked parent)
 
 A request that was auto-split returns the aggregate instead:
@@ -907,11 +937,26 @@ A request that was auto-split returns the aggregate instead:
 ```jsonc
 {"status": "running", "request_id": "<parent-id>", "chunked": true, "chunk_count": 5,
  "progress": {"completed": 2, "total": 5},
- "chunks": {"total": 5, "successful": 2, "running": 2, "queued": 1, "failed": 0, "cancelled": 0},
- "per_chunk": [{"index": 0, "request_id": "<child-id>", "status": "successful"}, "..."]}
+ "chunks": {"total": 5, "successful": 2, "running": 1, "downloading": 1,
+            "retrying": 0, "queued": 1, "failed": 0, "cancelled": 0},
+ "per_chunk": [{"index": 0, "request_id": "<child-id>", "status": "successful"},
+               {"index": 1, "request_id": "<child-id>", "status": "downloading",
+                "phase": "downloading"}, "..."]}
 ```
 
-`status` is the aggregate: `successful` once every chunk completes, `failed` if any chunk fails (the remaining in-flight chunks are then cancelled), `cancelled` if you cancel the parent. Each poll advances the workflow — it finalises completed children, so poll the parent until it reaches a terminal state. The individual `per_chunk[].request_id` values are also pollable on their own.
+`status` is the aggregate: `successful` once every chunk completes, `failed` if any chunk fails for a reason that will not resolve on its own (the remaining in-flight chunks are then cancelled), `cancelled` if you cancel the parent. Each poll advances the workflow — it finalises completed children and submits the next ones, so poll the parent until it reaches a terminal state. The individual `per_chunk[].request_id` values are also pollable on their own.
+
+The `chunks` counts **partition** the parts: every part is in exactly one bucket, so they sum to `total`.
+
+**Parts are submitted a few at a time,** not all at once — the Climate Data Store throttles an account to a small number of concurrent jobs and refuses the excess rather than queueing it. Each poll tops the level back up. A large split therefore completes over several waves; this is expected, not a stall. See `docs/setup.md` for the pacing knobs.
+
+**A part refused for capacity is re-submitted automatically** (a bounded number of times, spaced out) and shows as `retrying`; one refused part no longer destroys the whole retrieval. A part that failed because the *request* is wrong is never retried — it fails the parent promptly, because retrying a malformed request is only a slower way to fail.
+
+**`phase: "downloading"` on the parent** means every part has finished server-side and only local file transfers remain. Transfers resume across polls (see above), so continued polling does finish them part by part — but this is the natural moment to hand the job to one long-running `copernicus-mcp cds wait`, which completes the remaining transfers in a single uninterrupted pass.
+
+**A failed parent still gives you what landed.** It carries `partial_result: {files, chunk_indices, missing_chunk_indices}` with descriptors for the parts that did complete — deliberately outside `result`, so a failed parent never looks like a complete delivery. Every part is a first-class request id, so `cds_download_request_result(<per_chunk request_id>)` also resolves a completed part's file directly.
+
+**On a successful parent, check `result.complete`.** It is `false` when a part's file has since been evicted from the cache: the `files` list is then short, `evicted_chunk_indices` names the gaps, and `recovery_hint` explains how to refill them (re-run with `force_refresh`). `cds_download_request_result` refuses outright on that state rather than handing back a partial set.
 
 When `status` is `successful`, the response already carries the full multi-file `result` (the same `files` / `merge_hint` set that `cds_download_request_result` returns) — the chunk files were downloaded during polling, so there is no need to call download separately. If a chunk file has since been evicted, its index is listed in `result.evicted_chunk_indices`.
 
@@ -978,3 +1023,41 @@ Cancel a queued or running request. Idempotent on already-terminal rows.
 Cancellation is best-effort: the server may have processed the request between submit and cancel. The cancel call returns successfully in that race window with `status: "successful"`.
 
 Cancelling a chunked parent stops the plan and cascades to its children: in-flight chunks are cancelled (best-effort), already-completed chunks keep their files. The parent ends `cancelled`.
+
+> Two deliberate asymmetries of the key check: `cds_estimate_request` is NOT key-checked (an estimate is free and harmless; the submit is where a silently-ignored key costs you a wrong delivery), and the check runs BEFORE the cache lookup — a previously cached request whose keys a snapshot refresh now flags returns the validation error rather than the stale cache hit, because the cached file was produced by a request the server had silently mis-interpreted.
+
+## `cds_list_licences`
+
+The store's licence catalogue plus the account's already-accepted set. Use it when a submit fails with `TermsNotAcceptedError`: find the missing licence's `id` and `revision` here, then accept it (in-band via `cds_accept_licence` if the operator enabled it, otherwise via the web URL in the error's `recovery_url` or the CLI `copernicus-mcp cds accept-licence`).
+
+### Inputs
+
+- `dataset_id` (string, optional) — routes the call to the right store (CDS / ADS / EWDS); licence ids are per-store.
+
+### Output
+
+`{store, available: [{id, revision, label, scope, contents_url}], accepted: [...]}`. Only these known fields are passed through; both lists are sanitised.
+
+### Errors
+
+- `AuthError` — no CDS credentials resolve (listing reads the account's accepted set).
+- `NetworkError` / `BackendError` — store profile API unreachable / errored.
+
+## `cds_accept_licence`
+
+Accept a dataset licence **on behalf of the account owner**. Registered only when the operator opts in with `budget.cds_licence_accept_enabled: true` — acceptance is a legally binding act, so the agent-visible surface is off by default (the CLI `copernicus-mcp cds accept-licence` works regardless: the CLI is the operator's own hands).
+
+### Inputs
+
+- `licence_id` (string, required) — from `cds_list_licences`.
+- `revision` (integer ≥ 0, strict, required) — the revision `cds_list_licences` reports.
+- `dataset_id` (string, optional) — store routing.
+
+### Output
+
+`{accepted: true, licence_id, revision, store}`.
+
+### Errors
+
+- `ValidationError` — missing/blank `licence_id`, non-integer or negative `revision`.
+- `AuthError`, `NetworkError`, `BackendError` — credential / transport / server failures.

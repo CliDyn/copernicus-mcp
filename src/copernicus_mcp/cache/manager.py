@@ -127,6 +127,16 @@ class CacheManager:
         zone.mkdir(parents=True, exist_ok=True)
         return zone
 
+    def staging_root_for(self, backend_id: str) -> Path:
+        """Day-INDEPENDENT staging area for resumable partial transfers.
+
+        ``cache_zone_for`` partitions by calendar day — right for published
+        files, wrong for state that must survive a UTC-midnight boundary: a
+        transfer interrupted at 23:58 must be findable (and its leftovers
+        sweepable) at 00:05, and forever after. Pure path derivation — the
+        caller creates it when it first writes."""
+        return self._cache_directory / "downloads" / backend_id / ".staging"
+
     async def store_file(
         self,
         cache_key: str,

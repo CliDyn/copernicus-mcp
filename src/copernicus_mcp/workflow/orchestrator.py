@@ -55,6 +55,8 @@ _OPERATION_METHOD: dict[str, str] = {
     "list_files": "list_files",  # T-CMEMS-GET-INDEX-004: Layer 2 index listing.
     "get_coordinates": "get_coordinates",  # T-022 second half: coordinate axes.
     "apply_constraints": "apply_constraints",  # T-CDS-016: CDS narrowing.
+    "list_licences": "list_licences",  # T-CDS-LICENCE-001.
+    "accept_licence": "accept_licence",  # T-CDS-LICENCE-001 (opt-in tool).
     "poll": "check_status",
     "fetch": "fetch_result",
     "cancel": "cancel",
@@ -290,6 +292,21 @@ class WorkflowOrchestrator:
                 "configured": creds is not None,
                 "credential_source": creds.source if creds is not None else "missing",
             }
+
+        # T-CDS-OPS-001: merge OPTIONAL per-backend live diagnostics (e.g. the
+        # CDS account's active-job count, which pacing callers previously had
+        # to guess). Best-effort by contract — a probe failure or a raising
+        # backend must never take the status tool down.
+        for backend in self._registry.iter_backends():
+            details_fn = getattr(backend, "status_details", None)
+            if details_fn is None:
+                continue
+            try:
+                details = await details_fn()
+            except Exception:  # noqa: BLE001 — diagnostics stay best-effort
+                continue
+            if isinstance(details, dict) and details:
+                backends_block.setdefault(backend.backend_id, {}).update(details)
 
         cache_dir = cfg.storage.cache_directory
         # Recursive filesystem walk → threadpool so a large cache doesn't

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     parent_request_id TEXT,
-    chunk_plan_json TEXT
+    chunk_plan_json TEXT,
+    chunk_plan_version INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -41,6 +42,11 @@ CREATE TABLE IF NOT EXISTS workflows (
 ADDITIVE_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("workflows", "parent_request_id", "TEXT"),
     ("workflows", "chunk_plan_json", "TEXT"),
+    # T-CDS-RESIL-006: monotonic version for compare-and-swap plan writes.
+    # The per-parent asyncio lock is process-local; two processes polling one
+    # parent serialise their plan mutations through this counter instead of
+    # clobbering each other's whole-JSON overwrites.
+    ("workflows", "chunk_plan_version", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 # Index created AFTER the column migration (it references a possibly-just-added

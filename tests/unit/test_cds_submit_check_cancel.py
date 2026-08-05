@@ -126,7 +126,7 @@ async def test_submit_without_credentials_raises_auth_error(foundation) -> None:
 
 
 # ---------------------------------------------------------------------------
-# product_type required-field pre-flight (T-CDS-PT — WP3 field report)
+# product_type required-field pre-flight (T-CDS-PT — field report)
 # ---------------------------------------------------------------------------
 
 
@@ -556,7 +556,7 @@ def _whole_file_params() -> dict[str, object]:
 async def test_submit_cost_over_limit_raises_validation_error_pre_sdk(
     foundation, monkeypatch
 ) -> None:
-    """WP3 case D: cost 1827 > limit 400 → structured ValidationError with a
+    """Field case D: cost 1827 > limit 400 → structured ValidationError with a
     year-split hint, raised before any cdsapi call."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
     from copernicus_mcp.backends.cds.costing import CostingResult
@@ -683,7 +683,7 @@ async def test_submit_costing_none_never_rejects_on_cost_limit(
 
 
 def _splittable_params() -> dict[str, Any]:
-    """A 5-year daily request (WP3 case D shape) — splittable along year."""
+    """A 5-year daily request (field case D shape) — splittable along year."""
     return {
         "dataset_id": "derived-era5-single-levels-daily-statistics",
         "inputs": {
@@ -770,8 +770,9 @@ async def test_submit_over_limit_no_chunk_by_raises_proposal(
 async def test_submit_over_limit_chunk_by_year_submits_all_children(
     foundation, monkeypatch
 ) -> None:
-    """``chunk_by=year`` → parent row + ALL children submitted at once (v2: no
-    inflight throttle); the persisted plan records every child id."""
+    """``chunk_by=year`` → parent row + first wave submitted; all 5 chunks fit
+    inside the default ``cds_chunk_max_inflight=5``, so every child id lands
+    in the persisted plan on submit (T-CDS-RESIL-002 pacing is a no-op here)."""
     import json as _json
 
     from copernicus_mcp.backends.cds.backend import CdsBackend
@@ -1306,7 +1307,7 @@ async def test_check_status_parent_advances_to_successful(
 async def test_check_status_successful_parent_returns_files_directly(
     foundation, monkeypatch
 ) -> None:
-    """WP3 part-2: a successful chunked parent's check_status returns the full
+    """Field feedback, part 2: a successful chunked parent's check_status returns the full
     multi-file descriptor set (paths + merge_hint) directly — the agent does NOT
     need a second download call, since the files are already cached."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
@@ -2696,6 +2697,12 @@ async def test_user_supplied_uuid_under_inputs_jobid_is_redacted(
             "jobID": user_uuid,
             "job_id": user_uuid,
         },
+        # T-CDS-KEYCHECK-001 now rejects unknown keys (incl. jobID) up front
+        # on snapshot-covered datasets, which is an even stronger guarantee —
+        # but the sanitiser redaction is the defence-in-depth layer for the
+        # FAIL-OPEN path (no snapshot entry / stale snapshot), so this test
+        # bypasses the key check to keep that layer pinned.
+        "__options": {"skip_input_validation": True},
     }
     await backend.submit(params)
 
@@ -2755,7 +2762,7 @@ async def test_remote_job_failed_includes_next_action_hint_about_quota(
     workaround (serialise submits / wait before retry-storm) as a
     structured ``next_action_hint`` on every remote_job_failed error
     so LLM agents and human readers see it without needing to read
-    decisions.md."""
+    the project decision log."""
     import json
 
     from copernicus_mcp.backends.cds.backend import CdsBackend

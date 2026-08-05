@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
+import threading
+import time
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +13,8 @@ from typing import Any, cast
 import aiosqlite
 
 from copernicus_mcp.errors import BackendError, ValidationError, build_error_record
+from copernicus_mcp.observability.logger import get_logger
+from copernicus_mcp.persistence.fs_detect import is_network_filesystem
 from copernicus_mcp.persistence.protocol import (
     AcceptanceEvent,
     CacheEntry,
@@ -23,9 +28,80 @@ from copernicus_mcp.persistence.schema import (
     POST_MIGRATION_INDICES,
 )
 
+logger = get_logger(__name__)
+
+# A ``-wal`` untouched for this long has no live writer (a writer keeps
+# touching it); only then may self-heal move it aside (T-STATEDB-001).
+_SIDEFILE_STALE_SECONDS = 900.0
+
 
 def _iso_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Injectable connect for the probe — tests replace THIS alias, because
+# patching ``sqlite3.connect`` on the shared module object would also rewire
+# aiosqlite's own connects.
+_probe_connect = sqlite3.connect
+
+
+def _probe_journal_mode(db_path: str, journal_mode: str, timeout: float) -> str:
+    """Bounded, sacrificial probe of a journal-mode open (T-STATEDB-001,
+    review M4): ``"ok"``, ``"timeout"``, or ``"error: <cause>"``.
+
+    aiosqlite's worker thread is NOT a daemon, so a WAL pragma wedged inside
+    it (the recorded NFS failure mode) outlives ``close()`` and blocks
+    interpreter exit — a one-shot CLI would hang at shutdown. This probe runs
+    the same pragmas through plain ``sqlite3`` in a DAEMON thread we own: if
+    it wedges, only this disposable thread is abandoned and aiosqlite is
+    never opened in that mode at all. Deliberately synchronous — callers run
+    it via ``asyncio.to_thread`` so the bounded ``join`` never blocks the
+    event loop."""
+    result: dict[str, str] = {}
+
+    def _run() -> None:
+        try:
+            conn = _probe_connect(db_path, timeout=5)
+            try:
+                conn.execute("PRAGMA busy_timeout=5000;")
+                conn.execute(f"PRAGMA journal_mode={journal_mode};")
+                result["status"] = "ok"
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 — reported as a status string
+            result["status"] = f"error: {type(exc).__name__}: {exc}"
+
+    worker = threading.Thread(target=_run, daemon=True, name="state-db-probe")
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return "timeout"
+    return result.get("status", "error: probe thread died without a status")
+
+
+def _probe_write_lock(db_path: str, timeout: float) -> bool:
+    """Can the write lock be acquired right now? ``True`` = no live writer is
+    visible from this node (healing the side files is then safe as far as
+    locking can tell). Same sacrificial daemon-thread pattern as
+    ``_probe_journal_mode`` — a wedged lock attempt must never block exit."""
+    result: dict[str, bool] = {}
+
+    def _run() -> None:
+        try:
+            conn = _probe_connect(db_path, timeout=min(timeout, 5))
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.rollback()
+                result["ok"] = True
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — locked/unreachable = not safe
+            result["ok"] = False
+
+    worker = threading.Thread(target=_run, daemon=True, name="state-db-lock-probe")
+    worker.start()
+    worker.join(timeout)
+    return result.get("ok", False)
 
 
 def _wrap_validation(message: str, exc: BaseException) -> ValidationError:
@@ -50,10 +126,13 @@ class SqliteBackend:
     risk reads observing uncommitted state.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self, db_path: Path, *, pragma_timeout_seconds: float = 15.0
+    ) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+        self._pragma_timeout = pragma_timeout_seconds
 
     async def _apply_schema(self, conn: aiosqlite.Connection) -> None:
         """Create base tables/indices, then run additive column migrations and
@@ -73,6 +152,124 @@ class SqliteBackend:
         for stmt in POST_MIGRATION_INDICES:
             await conn.execute(stmt)
 
+    async def _open_configured(
+        self, journal_mode: str
+    ) -> aiosqlite.Connection:
+        """Open a fresh connection and apply the pragmas in an order that
+        cannot hang silently: ``busy_timeout`` FIRST (so a contended lock
+        errors after 5 s instead of blocking), then the journal mode. The
+        connection is closed on any failure; the caller owns the fallback
+        policy (T-STATEDB-001)."""
+        conn = await aiosqlite.connect(str(self._db_path))
+        success = False
+        try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000;")
+            await conn.execute(f"PRAGMA journal_mode={journal_mode};")
+            await conn.execute("PRAGMA foreign_keys=ON;")
+            success = True
+            return conn
+        finally:
+            if not success:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(conn.close(), timeout=2.0)
+
+    async def _heal_stale_sidefiles(self) -> bool:
+        """Self-heal after a FAILED open (T-STATEDB-001 ask 3): rename — never
+        delete — ``-wal``/``-shm`` side files orphaned by an unclean shutdown,
+        so the next open can proceed. Two independent guards, both required:
+
+        - staleness: a ``-wal`` untouched for ``_SIDEFILE_STALE_SECONDS`` (a
+          writer keeps touching it); and
+        - no visible live holder: a bounded ``BEGIN IMMEDIATE`` probe must
+          ACQUIRE the write lock first (review, local M4-medium: a live but
+          IDLE holder — e.g. a server waiting out a long CDS queue — does not
+          touch its ``-wal``, and healing under it would discard its
+          committed-but-uncheckpointed transactions). On the broken-NFS-lock
+          filesystems that motivate this feature the probe is best-effort,
+          which is why the mtime guard stays as well.
+
+        When both pass, BOTH side files move together — a lone leftover
+        ``-shm`` would still confuse the next open."""
+        wal = Path(str(self._db_path) + "-wal")
+        shm = Path(str(self._db_path) + "-shm")
+        try:
+            wal_stale = (
+                wal.exists()
+                and time.time() - wal.stat().st_mtime > _SIDEFILE_STALE_SECONDS
+            )
+        except OSError:
+            return False
+        if not wal_stale:
+            return False
+        lock_probe = await asyncio.to_thread(
+            _probe_write_lock, str(self._db_path), self._pragma_timeout
+        )
+        if not lock_probe:
+            logger.warning(
+                "state_db_stale_sidefiles_kept_live_holder_suspected",
+                extra={"db_path": str(self._db_path)},
+            )
+            return False
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        # The lock probe read the database, and sqlite may have legitimately
+        # RECOVERED (and removed) the orphaned WAL during that read — that is
+        # healing too, just performed by sqlite itself.
+        moved = not wal.exists()
+        for side in (wal, shm):
+            try:
+                if side.exists():
+                    target = side.with_name(f"{side.name}.stale-{stamp}")
+                    side.rename(target)
+                    moved = True
+                    logger.warning(
+                        "state_db_stale_sidefile_moved_aside",
+                        extra={"from": str(side), "to": str(target)},
+                    )
+            except OSError:
+                continue
+        return moved
+
+    async def _try_open(self, journal_mode: str) -> aiosqlite.Connection | None:
+        """One bounded open attempt: ``None`` on the known lock/timeout
+        failures (the fallback chain continues), raise on anything else.
+
+        The mode is PROBED first in a sacrificial daemon thread
+        (``_probe_journal_mode``) so a wedged pragma never reaches aiosqlite,
+        whose non-daemon worker would survive ``close()`` and block
+        interpreter exit (review M4). The ``wait_for`` on the real open stays
+        as the belt for the residual probe-then-wedge race."""
+        probe = await asyncio.to_thread(
+            _probe_journal_mode,
+            str(self._db_path),
+            journal_mode,
+            self._pragma_timeout,
+        )
+        if probe != "ok":
+            logger.warning(
+                "state_db_open_failed",
+                extra={
+                    "db_path": str(self._db_path),
+                    "journal_mode": journal_mode,
+                    "cause": f"probe: {probe}",
+                },
+            )
+            return None
+        try:
+            return await asyncio.wait_for(
+                self._open_configured(journal_mode), timeout=self._pragma_timeout
+            )
+        except (sqlite3.OperationalError, TimeoutError) as exc:
+            logger.warning(
+                "state_db_open_failed",
+                extra={
+                    "db_path": str(self._db_path),
+                    "journal_mode": journal_mode,
+                    "cause": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return None
+
     async def initialise(self) -> None:
         if self._conn is not None:
             # Re-running on an open backend is fine (idempotent CREATEs).
@@ -81,18 +278,61 @@ class SqliteBackend:
                 await self._conn.commit()
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self._db_path))
+
+        # T-STATEDB-001: six recorded incidents of the WAL open hanging or
+        # erroring on an HPC network home after an unclean shutdown — the MCP
+        # client's connect then times out and the agent proceeds tool-less,
+        # silently. Policy: on a detected network filesystem skip WAL outright
+        # (DELETE journal is fine for a single-writer stdio server and keeps
+        # the shared-path cross-node polling working); otherwise attempt WAL
+        # with a bounded timeout, self-heal stale side files once, fall back
+        # to DELETE, and as the last resort fail LOUD with the cause and the
+        # ``COPERNICUS_MCP_STATE_DB`` remedy — never hang.
+        on_network = is_network_filesystem(self._db_path.parent)
+        conn: aiosqlite.Connection | None = None
+        if on_network is True:
+            logger.info(
+                "state_db_on_network_fs_using_delete_journal",
+                extra={"db_path": str(self._db_path)},
+            )
+        else:
+            conn = await self._try_open("WAL")
+            if conn is None and await self._heal_stale_sidefiles():
+                conn = await self._try_open("WAL")
+        if conn is None:
+            conn = await self._try_open("DELETE")
+        # Review, local M3: the six-incident scenario IS the network path —
+        # orphaned WAL side files on NFS. A DELETE open must recover the
+        # stale WAL too, so the self-heal runs here as well before giving up.
+        if conn is None and await self._heal_stale_sidefiles():
+            conn = await self._try_open("DELETE")
+        if conn is None:
+            raise BackendError(
+                f"state database at {self._db_path} could not be opened",
+                record=build_error_record(
+                    "BackendError",
+                    message=(
+                        f"The state database at {self._db_path} could not be "
+                        "opened in WAL or DELETE journal mode (locked or "
+                        "unresponsive — typically stale lock state on a "
+                        "network filesystem after an unclean shutdown). "
+                        "Point COPERNICUS_MCP_STATE_DB at a fresh path (a "
+                        "node-local disk on HPC) or remove the stale "
+                        "state.db-wal/state.db-shm files once no other "
+                        "copernicus-mcp process is running."
+                    ),
+                    error_subclass="state_db_unavailable",
+                    recovery_action="report_to_administrator",
+                ),
+            )
+
         # codex T-015 MEDIUM: assign ``_conn`` immediately so ``close()``
-        # can clean up if any subsequent PRAGMA/DDL await fails or is
-        # cancelled. try/finally + success flag avoids ``except BaseException``
+        # can clean up if any subsequent DDL await fails or is cancelled.
+        # try/finally + success flag avoids ``except BaseException``
         # (forbidden by the AST test in test_errors.py).
         self._conn = conn
         success = False
         try:
-            conn.row_factory = aiosqlite.Row
-            await conn.execute("PRAGMA journal_mode=WAL;")
-            await conn.execute("PRAGMA foreign_keys=ON;")
-            await conn.execute("PRAGMA busy_timeout=5000;")
             await self._apply_schema(conn)
             await conn.commit()
             success = True
@@ -315,16 +555,36 @@ class SqliteBackend:
             return [_row_to_workflow(row) for row in rows]
 
     async def update_chunk_plan(
-        self, request_id: str, chunk_plan_json: str
-    ) -> None:
-        """T-CDS-CHUNK-001: persist a parent's chunk plan."""
+        self,
+        request_id: str,
+        chunk_plan_json: str,
+        *,
+        expected_version: int | None = None,
+    ) -> bool:
+        """T-CDS-CHUNK-001 / T-CDS-RESIL-006: persist a parent's chunk plan.
+
+        With ``expected_version`` the write is a compare-and-swap against the
+        monotonic ``chunk_plan_version`` — the cross-PROCESS serialisation the
+        process-local parent lock cannot give. A losing writer gets ``False``
+        and must re-read the plan and re-decide, never blind-retry the same
+        bytes. Without it the write is last-writer-wins (reserved for paths
+        that re-derive the plan from scratch) but STILL bumps the version so
+        concurrent CAS writers observe the movement. Every committed write
+        bumps the version by exactly 1."""
+        where = "WHERE request_id = ?"
+        params: list[Any] = [chunk_plan_json, _iso_now(), request_id]
+        if expected_version is not None:
+            where += " AND chunk_plan_version = ?"
+            params.append(expected_version)
         async with self._lock:
-            await self._conn_required().execute(
-                "UPDATE workflows SET chunk_plan_json = ?, updated_at = ? "
-                "WHERE request_id = ?",
-                (chunk_plan_json, _iso_now(), request_id),
+            cur = await self._conn_required().execute(
+                "UPDATE workflows SET chunk_plan_json = ?, "
+                "chunk_plan_version = chunk_plan_version + 1, "
+                f"updated_at = ? {where}",
+                params,
             )
             await self._conn_required().commit()
+            return cur.rowcount == 1
 
     # ------------------------------------------------------------------
     # provenance
@@ -599,6 +859,7 @@ def _row_to_workflow(row: Any) -> WorkflowRecord:
             "updated_at": row["updated_at"],
             "parent_request_id": row["parent_request_id"],
             "chunk_plan_json": row["chunk_plan_json"],
+            "chunk_plan_version": row["chunk_plan_version"],
         },
     )
 
