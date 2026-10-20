@@ -19,9 +19,11 @@ arbitrary tree.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import os
 import shutil
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +34,10 @@ from copernicus_mcp.persistence.protocol import CacheEntry
 logger = get_logger(__name__)
 
 _FILE_NS = "file"
+# Filesystems (or mounts) that refuse hard links: publish by copy instead.
+_NO_LINK_ERRNOS = frozenset(
+    {errno.EXDEV, errno.EPERM, errno.EMLINK, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
 
 MANIFEST_CONTENT_TYPE = "application/x.cmems-get-manifest+json"
 """content_type marker for multi-file ``get`` bundles (T-CMEMS-GET-002)."""
@@ -180,6 +186,149 @@ class CacheManager:
             await self._enforce_size_limit()
             return target
 
+    # --- T-CDS-FINALISE-ATOMIC: request-scoped publication -----------------
+
+    def publish_request_file(self, source: Path, final: Path) -> Path:
+        """Blocking: make ``source`` (a fully downloaded, verified file)
+        visible at ``final`` without ever overwriting a name, then drop
+        ``source``. ``final`` is request-scoped, so an existing file there was
+        published by an earlier attempt of the SAME request (complete by
+        construction) and is reused. On a filesystem that refuses hard links
+        the bytes are copied to a hidden temporary name first and renamed into
+        place, so ``final`` never names a partial file."""
+        final.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source, final)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            if exc.errno not in _NO_LINK_ERRNOS:
+                raise
+            tmp = final.with_name(f".{final.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                shutil.copyfile(source, tmp)
+                with open(tmp, "rb") as fh:
+                    os.fsync(fh.fileno())
+                if not final.exists():
+                    os.replace(tmp, final)
+            finally:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+        with contextlib.suppress(OSError):
+            source.unlink()
+        return final
+
+    def find_request_publication(
+        self, backend_id: str, short_hash: str, tag: str
+    ) -> Path | None:
+        """Blocking: the newest file published for request ``tag`` under
+        ``short_hash`` in any day zone, or ``None``."""
+        root = self._cache_directory / "downloads" / backend_id
+        found: list[tuple[float, Path]] = []
+        for p in root.glob(f"*/*/*/cds_{short_hash}.{tag}.*"):
+            if p.name.endswith(".provenance.json"):
+                continue
+            try:
+                found.append((p.stat().st_mtime, p))
+            except OSError:
+                continue  # removed meanwhile (a cancel discarding it)
+        if not found:
+            return None
+        return max(found)[1]
+
+    def discard_request_publications(self, backend_id: str, tag: str) -> int:
+        """Blocking: remove every file (and sidecar) published for request
+        ``tag``. Called when the request turned terminal without being
+        registered, so nothing can reference these files."""
+        root = self._cache_directory / "downloads" / backend_id
+        removed = 0
+        for p in root.glob(f"*/*/*/cds_*.{tag}.*"):
+            with contextlib.suppress(OSError):
+                p.unlink()
+                removed += 1
+        return removed
+
+    async def register_success(
+        self,
+        *,
+        request_id: str,
+        cache_key: str,
+        file_path: Path,
+        content_type: str,
+    ) -> bool:
+        """Commit the workflow row ``successful`` together with the cache
+        entry for ``file_path`` (one transaction). ``False``: the row was
+        already settled by someone else and nothing changed. On success the
+        superseded entry's file (force-refresh) is removed afterwards — only
+        if it is a different file — and the size limit is enforced."""
+        async with self._cache_lock:
+            now = _iso_now()
+            entry: CacheEntry = {
+                "namespace": _FILE_NS,
+                "key": cache_key,
+                "value_json": "{}",
+                "file_path": str(file_path),
+                "size_bytes": file_path.stat().st_size,
+                "content_type": content_type,
+                "created_at": now,
+                "last_accessed_at": now,
+            }
+            committed, superseded = (
+                await self._persistence.commit_success_with_cache_entry(
+                    request_id, entry
+                )
+            )
+            if not committed:
+                return False
+            if superseded is not None and superseded.get("file_path") != str(
+                file_path
+            ):
+                self._remove_entry_files(superseded)
+            await self._enforce_size_limit()
+            return True
+
+    def find_legacy_files(self, backend_id: str, short_hash: str) -> list[Path]:
+        """Blocking: files published under 0.7.0's canonical
+        ``cds_<hash>.<ext>`` name (no request tag), any day zone."""
+        root = self._cache_directory / "downloads" / backend_id
+        prefix = f"cds_{short_hash}"
+        out: list[Path] = []
+        for p in root.glob(f"*/*/*/{prefix}.*"):
+            rest = p.name[len(prefix):]
+            if rest.count(".") == 1 and not p.name.endswith(".provenance.json"):
+                out.append(p)
+        return out
+
+    async def register_repaired(
+        self,
+        *,
+        request_id: str,
+        cache_key: str,
+        file_path: Path,
+        content_type: str,
+    ) -> bool:
+        """Register ``file_path`` for a row that is already ``successful``
+        but lost its entry. ``False``: the row is no longer successful or the
+        key got an entry meanwhile (nothing changed)."""
+        async with self._cache_lock:
+            now = _iso_now()
+            entry: CacheEntry = {
+                "namespace": _FILE_NS,
+                "key": cache_key,
+                "value_json": "{}",
+                "file_path": str(file_path),
+                "size_bytes": file_path.stat().st_size,
+                "content_type": content_type,
+                "created_at": now,
+                "last_accessed_at": now,
+            }
+            if not await self._persistence.register_entry_if_missing(
+                request_id, entry
+            ):
+                return False
+            await self._enforce_size_limit()
+            return True
+
     async def store_manifest(
         self,
         cache_key: str,
@@ -304,25 +453,42 @@ class CacheManager:
         # a concurrent eviction between our row read and our
         # ``last_accessed_at`` UPSERT would resurrect the row pointing
         # at an already-deleted file.
+        #
+        # T-CDS-FINALISE-ATOMIC decision 6: ``_cache_lock`` is per process, so
+        # the delete and the LRU bump are conditional on the entry still
+        # pointing at the path read here. Another process that re-registered
+        # the key in between keeps its entry; we re-read it once.
         async with self._cache_lock:
-            entry = await self._persistence.lookup_cache_entry(
-                _FILE_NS, cache_key
-            )
-            if entry is None:
-                return None
-            path_str = entry.get("file_path")
-            if path_str is None:
-                await self._persistence.delete_cache_entry(_FILE_NS, cache_key)
-                return None
-            path = Path(path_str)
-            if not path.exists():
-                await self._persistence.delete_cache_entry(_FILE_NS, cache_key)
-                return None
-            # Bump last_accessed_at for LRU eviction.
-            refreshed = dict(entry)
-            refreshed["last_accessed_at"] = _iso_now()
-            await self._persistence.record_cache_entry(refreshed)  # type: ignore[arg-type]
-            return refreshed  # type: ignore[return-value]
+            for _attempt in range(2):
+                entry = await self._persistence.lookup_cache_entry(
+                    _FILE_NS, cache_key
+                )
+                if entry is None:
+                    return None
+                path_str = entry.get("file_path")
+                if path_str is None or not Path(path_str).exists():
+                    if await self._persistence.evict_cache_entry_if_matches(
+                        _FILE_NS,
+                        cache_key,
+                        path_str,
+                        "file_missing",
+                        generation=entry.get("generation"),
+                    ):
+                        return None
+                    continue
+                # Bump last_accessed_at for LRU eviction.
+                accessed_at = _iso_now()
+                if await self._persistence.touch_cache_entry_if_matches(
+                    _FILE_NS,
+                    cache_key,
+                    path_str,
+                    accessed_at,
+                    generation=entry.get("generation"),
+                ):
+                    refreshed = dict(entry)
+                    refreshed["last_accessed_at"] = accessed_at
+                    return refreshed  # type: ignore[return-value]
+            return None
 
     async def invalidate(self, cache_key: str) -> bool:
         async with self._cache_lock:
@@ -331,11 +497,19 @@ class CacheManager:
             )
             if entry is None:
                 return False
-            removed_file = self._remove_entry_files(entry)
-            removed_entry = await self._persistence.delete_cache_entry(
-                _FILE_NS, cache_key
+            # Entry first (conditional, with a tombstone), file only if this
+            # call removed the entry it read.
+            removed_entry = await self._persistence.evict_cache_entry_if_matches(
+                _FILE_NS,
+                cache_key,
+                entry.get("file_path"),
+                "invalidated",
+                generation=entry.get("generation"),
             )
-            return removed_file or removed_entry
+            if not removed_entry:
+                return False
+            self._remove_entry_files(entry)
+            return True
 
     def _safe_manifest_data_dir(self, manifest_path_str: str) -> Path | None:
         """Return the data_dir for a manifest entry, or ``None`` if the
@@ -433,8 +607,19 @@ class CacheManager:
         for entry in entries:
             if total <= self._size_limit_bytes:
                 break
+            # T-CDS-FINALISE-ATOMIC decision 6: the snapshot may be stale (another
+            # process re-registered the key). Delete the entry only if it still
+            # points at the snapshot's path, tombstone in the same transaction,
+            # and remove the file only after that commit.
+            if not await self._persistence.evict_cache_entry_if_matches(
+                _FILE_NS,
+                entry["key"],
+                entry.get("file_path"),
+                "lru",
+                generation=entry.get("generation"),
+            ):
+                continue
             self._remove_entry_files(entry)
-            await self._persistence.delete_cache_entry(_FILE_NS, entry["key"])
             total -= entry.get("size_bytes") or 0
             logger.info(
                 "evicted cache entry",

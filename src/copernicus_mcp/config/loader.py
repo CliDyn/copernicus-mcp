@@ -28,6 +28,10 @@ _ENV_VAR_MAP: dict[str, tuple[str, ...]] = {
         "cds_chunk_retry_backoff_seconds",
     ),
     "COPERNICUS_MCP_CDS_RESUME_DOWNLOADS": ("budget", "cds_resume_downloads"),
+    "COPERNICUS_MCP_CDS_DOWNLOAD_INLINE_GRACE_SECONDS": (
+        "budget",
+        "cds_download_inline_grace_seconds",
+    ),
 }
 
 

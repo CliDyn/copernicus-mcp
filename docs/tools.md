@@ -899,7 +899,7 @@ A request that cannot be split (no list-valued calendar axis, or a single calend
 
 ### Cross-store routing
 
-Submit / poll / cancel **and the download triggered by a successful poll** are routed automatically to the right Data Store endpoint based on each dataset's `store` field in the bundled catalogue snapshot. (`cds_download_request_result` itself is cache-only — by the time you call it the file is already on disk; it does not hit the network.)
+Submit / poll / cancel **and the download triggered by a successful poll** are routed automatically to the right Data Store endpoint based on each dataset's `store` field in the bundled catalogue snapshot. (`cds_download_request_result` normally reads the local cache; it contacts the store only to finish a pending download or to recover a result whose local cache entry was lost — see below.)
 
 - CDS datasets → `https://cds.climate.copernicus.eu/api`
 - ADS datasets → `https://ads.atmosphere.copernicus.eu/api`
@@ -930,6 +930,22 @@ When the CDS job has finished server-side and the result file is being fetched, 
 
 > **Transfers are resumable across polls and processes.** The staged download survives the process that started it: if a poll (or the whole server) exits mid-transfer, the partial bytes are kept, and the next `check_status` for the same request appends from where the previous one stopped instead of restarting from zero. Even short-lived one-shot pollers — a fresh CLI invocation per poll — therefore make forward progress on a large file; each poll accumulates more bytes. Still, when you see `phase: "downloading"` the slow part (the queue wait) is over, and one long-running `copernicus-mcp cds wait <request_id>` finishes the transfer fastest — in a single uninterrupted pass rather than poll-sized instalments. Abandoned partial transfers are cleaned up automatically after a week; set `budget.cds_resume_downloads: false` to restore per-attempt throwaway staging.
 
+### Output (result not in the local cache)
+
+A row that is `successful` but whose file is no longer registered in the local cache reads `status: "failed"` with a **local** `CacheError` — the CDS job itself succeeded:
+
+```jsonc
+{"status": "failed", "error_details": {
+  "error_class": "CacheError",
+  "error_subclass": "cache_entry_missing",      // or "cache_eviction" after an LRU eviction
+  "retryable": true, "automatic_retry_recommended": false,
+  "recovery_action": "use_alternative_tool",
+  "context": {"remote_job_status": "successful", "local_only": true},
+  "next_action_hint": "... run `copernicus-mcp cds download <id>` ..."}}
+```
+
+Polling again does not change it. Call `cds_download_request_result` (CLI: `cds download`): it re-registers the file from disk or re-downloads it from the finished job — no new CDS job. `cache_eviction` means the cache's size limit removed the file; `cache_entry_missing` means the entry was lost otherwise (for example by an older version that could be interrupted between marking the request successful and registering its file).
+
 ### Output (chunked parent)
 
 A request that was auto-split returns the aggregate instead:
@@ -956,7 +972,7 @@ The `chunks` counts **partition** the parts: every part is in exactly one bucket
 
 **A failed parent still gives you what landed.** It carries `partial_result: {files, chunk_indices, missing_chunk_indices}` with descriptors for the parts that did complete — deliberately outside `result`, so a failed parent never looks like a complete delivery. Every part is a first-class request id, so `cds_download_request_result(<per_chunk request_id>)` also resolves a completed part's file directly.
 
-**On a successful parent, check `result.complete`.** It is `false` when a part's file has since been evicted from the cache: the `files` list is then short, `evicted_chunk_indices` names the gaps, and `recovery_hint` explains how to refill them (re-run with `force_refresh`). `cds_download_request_result` refuses outright on that state rather than handing back a partial set.
+**On a successful parent, check `result.complete`.** It is `false` when a part's file has since been evicted from the cache: the `files` list is then short, `evicted_chunk_indices` names the gaps, and `recovery_hint` explains how to refill them. `cds_download_request_result` first recovers each missing part from its own finished CDS job; only if that fails does it refuse rather than hand back a partial set (then re-run with `force_refresh`).
 
 When `status` is `successful`, the response already carries the full multi-file `result` (the same `files` / `merge_hint` set that `cds_download_request_result` returns) — the chunk files were downloaded during polling, so there is no need to call download separately. If a chunk file has since been evicted, its index is listed in `result.evicted_chunk_indices`.
 
@@ -966,7 +982,12 @@ When `status` is `successful`, the response already carries the full multi-file 
 
 ## `cds_download_request_result`
 
-Fetch a completed result from the canonical cache. Returns a file descriptor — never inline bytes.
+Fetch a completed result. Returns a file descriptor — never inline bytes.
+
+- `successful` with the file cached: returns it (no network).
+- CDS job done but the file still downloading: waits up to ~30 s for the transfer, then either returns the file or `result_not_ready` (poll `cds_check_request_status` and call again).
+- `successful` but the local cache entry was lost (`cache_entry_missing` / `cache_eviction` on check-status): re-registers the file if it is still on disk with the size CDS reports for the job, otherwise re-downloads it from the finished job. No new CDS job.
+- CDS no longer holds the result (purged after its retention window): `BackendError` `remote_result_expired` — submit the request again.
 
 ### Inputs
 

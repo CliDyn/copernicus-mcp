@@ -192,7 +192,11 @@ def _parse_tz_aware_datetimes(series: pd.Series) -> pd.Series:
     """
     has_tz = series.fillna("").astype(str).str.contains(_TZ_SUFFIX_RE)
     cleaned = series.where(has_tz, other=pd.NA)
-    return pd.to_datetime(cleaned, errors="coerce", utc=True, format="ISO8601")
+    parsed = pd.to_datetime(cleaned, errors="coerce", utc=True, format="ISO8601")
+    # Pin the resolution: pandas 2.x parses ISO strings to ``ns``; the
+    # canonical IndexRow dtype (and every empty-frame branch) is ``us``.
+    # Sub-microsecond digits are floored; no CMEMS index format carries them.
+    return parsed.dt.as_unit("us")
 
 
 def _drop_contract_violations(
@@ -365,7 +369,7 @@ def _normalise_canyon_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
             # canyon dates are naive UTC; attach explicitly.
             "time": pd.to_datetime(
                 df_raw["date"], errors="coerce", utc=True, format="ISO8601"
-            ),
+            ).dt.as_unit("us"),
         }
     )
     # Drop rows that fail coercion before grouping.
@@ -510,8 +514,8 @@ def _parse_path_listing(
         )[list(_CANONICAL_COLUMNS)]
 
     df = pd.DataFrame(rows)
-    df["time_start"] = pd.to_datetime(df["time_start"], utc=True)
-    df["time_end"] = pd.to_datetime(df["time_end"], utc=True)
+    df["time_start"] = pd.to_datetime(df["time_start"], utc=True).dt.as_unit("us")
+    df["time_end"] = pd.to_datetime(df["time_end"], utc=True).dt.as_unit("us")
     return df[list(_CANONICAL_COLUMNS)]
 
 

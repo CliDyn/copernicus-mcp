@@ -472,12 +472,20 @@ If the user has not accepted the dataset's licence(s), the server returns HTTP 4
 ## `cds check-status`
 
 ```text
-Usage: copernicus-mcp cds check-status REQUEST_ID [OPTIONS]
+Usage: copernicus-mcp cds check-status REQUEST_ID [REQUEST_ID ...] [OPTIONS]
 
+  --no-download   Never start a result download in this process (a chunked
+                  parent still submits its next parts).
   --json
 ```
 
 One-shot poll. Prints the workflow row. Status is one of `queued` / `running` / `successful` / `failed` / `cancelled`.
+
+Without `--no-download`, a poll that finds the CDS job done starts the result download and waits a short inline grace (`budget.cds_download_inline_grace_seconds`, default 2 s; env `COPERNICUS_MCP_CDS_DOWNLOAD_INLINE_GRACE_SECONDS`). A larger file reads `running` / `phase: "downloading"`; the process then exits cleanly and the next poll resumes the transfer. With `--no-download` such a request reads `running` / `phase: "download_pending"` (same JSON shape) — drive the download with `cds wait` or `cds download`. Pollers that run many short `check-status` processes should use `--no-download`.
+
+A `successful` request whose file is no longer in the local cache reads `failed` with `error_class: CacheError`, `error_subclass: cache_entry_missing` (or `cache_eviction` after an LRU eviction) and `context.local_only: true`. The CDS job did succeed: recover the file with `cds download` (no new CDS job).
+
+On SIGTERM the command stops its background work, closes the state database and exits with code 143; the request stays resumable.
 
 ## `cds wait`
 
@@ -491,7 +499,7 @@ Usage: copernicus-mcp cds wait REQUEST_ID [OPTIONS]
   --json
 ```
 
-Blocks until status is terminal (`successful` / `failed` / `cancelled`), or exits 1 on `--timeout` expiry.
+Blocks until status is terminal (`successful` / `failed` / `cancelled`), or exits 1 on `--timeout` expiry. A request that reads `failed` only because its local cache entry was lost (`cache_entry_missing` / `cache_eviction`, `local_only`) is re-fetched once from the finished CDS job within what is left of `--timeout`; `wait` then prints the usual successful status. If that recovery fails (for example `remote_result_expired` when CDS purged the result), `wait` prints the error and exits 1.
 
 ## `cds download`
 
@@ -501,10 +509,16 @@ Usage: copernicus-mcp cds download REQUEST_ID [OPTIONS]
   --target PATH         Reserved. CDS backend stores files in the canonical
                         cache regardless; this option is accepted but ignored
                         in the current release.
+  --timeout FLOAT       Seconds to wait for a foreground download (default
+                        7200).
   --json
 ```
 
-Returns the file descriptor `{filepath, uri, metadata, provenance}`. Fails with `error_subclass="result_not_ready"` if the workflow has not reached `successful`.
+Returns the file descriptor `{filepath, uri, metadata, provenance}`.
+
+- If the CDS job is done but the file is not local yet, downloads it in the foreground (up to `--timeout`) — unless another process is already downloading it; then it reports `result_not_ready` at once (use `cds wait` to block on that).
+- If the request is `successful` but its local cache entry was lost, re-registers the file from disk (when its size matches what CDS reports for the job) or re-downloads it from the finished job — no new CDS job. On a chunked parent this is done per part.
+- Fails with `error_subclass="result_not_ready"` if the CDS job has not finished, and with `remote_result_expired` if CDS has purged the result (submit again).
 
 ## `cds cancel`
 

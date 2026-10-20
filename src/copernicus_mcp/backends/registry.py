@@ -70,3 +70,9 @@ class BackendRegistry:
 
     def iter_backends(self) -> Iterator[BackendProtocol]:
         return iter(self._backends.values())
+
+    async def close_all(self) -> None:
+        """Close every backend (stop and await their background work). Call
+        BEFORE the foundation's store closes."""
+        for backend in list(self._backends.values()):
+            await backend.close()

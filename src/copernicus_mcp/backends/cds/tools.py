@@ -721,7 +721,16 @@ async def cds_download_request_result(
     cache eviction.
 
     Use this after ``cds_check_request_status`` reports
-    ``status=successful``.
+    ``status=successful`` — or to RECOVER a result: when check-status
+    reports ``failed`` with ``error_class=CacheError`` and
+    ``error_subclass`` ``cache_entry_missing`` / ``cache_eviction``
+    (``context.local_only=true``), the CDS job did succeed; this tool
+    re-registers the file from disk or re-downloads it from the finished
+    job, without a new CDS job. Polling again does not repair it. A request
+    whose CDS job is done but whose file is still downloading is waited on
+    for up to ~30 s; if it is not ready yet you get ``result_not_ready`` —
+    poll ``cds_check_request_status`` and call again. ``remote_result_expired``
+    means CDS purged the result: submit again.
 
     Inputs:
       - request_id: returned by ``cds_submit_request``.

@@ -5,6 +5,7 @@ import contextlib
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -685,29 +686,63 @@ class SqliteBackend:
     # ------------------------------------------------------------------
 
     async def record_cache_entry(self, entry: CacheEntry) -> None:
+        """Register (or replace) the entry for ``(namespace, key)`` and drop
+        the key's tombstones in the same transaction (T-CDS-FINALISE-ATOMIC:
+        a tombstone describes the current registration only)."""
         async with self._lock:
-            await self._conn_required().execute(
-                "INSERT INTO cache_entries (namespace, key, value_json, "
-                "file_path, size_bytes, content_type, created_at, "
-                "last_accessed_at) VALUES (?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(namespace, key) DO UPDATE SET "
-                "value_json = excluded.value_json, "
-                "file_path = excluded.file_path, "
-                "size_bytes = excluded.size_bytes, "
-                "content_type = excluded.content_type, "
-                "last_accessed_at = excluded.last_accessed_at",
-                (
-                    entry["namespace"],
-                    entry["key"],
-                    entry["value_json"],
-                    entry.get("file_path"),
-                    entry["size_bytes"],
-                    entry.get("content_type"),
-                    entry["created_at"],
-                    entry["last_accessed_at"],
-                ),
-            )
-            await self._conn_required().commit()
+            conn = self._conn_required()
+            committed = False
+            try:
+                await self._discard_abandoned_transaction(conn)
+                await self._execute_cache_upsert(conn, entry)
+                await conn.execute(
+                    "DELETE FROM cache_evictions WHERE namespace = ? AND key = ?",
+                    (entry["namespace"], entry["key"]),
+                )
+                await conn.commit()
+                committed = True
+            finally:
+                # Cancellation included: never leave a half-applied
+                # transaction for the next statement on this connection to
+                # commit. The exception (CancelledError too) propagates.
+                if not committed:
+                    await self._safe_rollback()
+
+    async def _execute_cache_upsert(
+        self, conn: aiosqlite.Connection, entry: CacheEntry
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO cache_entries (namespace, key, value_json, "
+            "file_path, size_bytes, content_type, created_at, "
+            "last_accessed_at, generation) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(namespace, key) DO UPDATE SET "
+            "value_json = excluded.value_json, "
+            "file_path = excluded.file_path, "
+            "size_bytes = excluded.size_bytes, "
+            "content_type = excluded.content_type, "
+            "last_accessed_at = excluded.last_accessed_at, "
+            "generation = excluded.generation",
+            (
+                entry["namespace"],
+                entry["key"],
+                entry["value_json"],
+                entry.get("file_path"),
+                entry["size_bytes"],
+                entry.get("content_type"),
+                entry["created_at"],
+                entry["last_accessed_at"],
+                uuid.uuid4().hex,
+            ),
+        )
+
+    async def _discard_abandoned_transaction(
+        self, conn: aiosqlite.Connection
+    ) -> None:
+        """Called under ``self._lock``: nobody else is mid-statement, so an
+        open transaction here was abandoned by an interrupted caller. Roll it
+        back so this method's COMMIT cannot persist its half."""
+        if conn.in_transaction:
+            await conn.rollback()
 
     async def lookup_cache_entry(
         self, namespace: str, key: str
@@ -728,6 +763,190 @@ class SqliteBackend:
             )
             await self._conn_required().commit()
             return cur.rowcount > 0
+
+    async def commit_success_with_cache_entry(
+        self, request_id: str, entry: CacheEntry
+    ) -> tuple[bool, CacheEntry | None]:
+        """T-CDS-FINALISE-ATOMIC decision 1: flip the workflow row to
+        ``successful`` AND register its cache entry in ONE transaction.
+
+        The flip is conditional (``queued``/``running`` only). When it hits
+        nothing (a cancel or another finaliser settled the row) the
+        transaction rolls back and ``(False, None)`` returns. Otherwise the
+        previous entry for the key (if any) is replaced, the key's
+        tombstones are dropped, and ``(True, previous_entry)`` returns so the
+        caller can remove the superseded file AFTER the commit. Any other
+        exit — an error, or cancellation — rolls back before the store lock
+        is released; the exception propagates unchanged."""
+        async with self._lock:
+            conn = self._conn_required()
+            settled = False
+            try:
+                await self._discard_abandoned_transaction(conn)
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    "UPDATE workflows SET status = 'successful', updated_at = ? "
+                    "WHERE request_id = ? AND status IN ('queued','running')",
+                    (_iso_now(), request_id),
+                )
+                if cur.rowcount == 0:
+                    await conn.rollback()
+                    settled = True
+                    return False, None
+                cur = await conn.execute(
+                    "SELECT * FROM cache_entries WHERE namespace = ? AND key = ?",
+                    (entry["namespace"], entry["key"]),
+                )
+                old = await cur.fetchone()
+                await self._execute_cache_upsert(conn, entry)
+                await conn.execute(
+                    "DELETE FROM cache_evictions WHERE namespace = ? AND key = ?",
+                    (entry["namespace"], entry["key"]),
+                )
+                await conn.commit()
+                settled = True
+                return True, (_row_to_cache_entry(old) if old else None)
+            finally:
+                if not settled:
+                    await self._safe_rollback()
+
+    async def register_entry_if_missing(
+        self, request_id: str, entry: CacheEntry
+    ) -> bool:
+        """Repair a lost registration (T-CDS-FINALISE-ATOMIC decision 9): record
+        ``entry`` only while the workflow row is ``successful`` AND the key has
+        no entry — one transaction, so a concurrent repair or force-refresh
+        that registered meanwhile always wins. Clears the key's tombstones."""
+        async with self._lock:
+            conn = self._conn_required()
+            settled = False
+            try:
+                await self._discard_abandoned_transaction(conn)
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    "SELECT status FROM workflows WHERE request_id = ?",
+                    (request_id,),
+                )
+                wf = await cur.fetchone()
+                cur = await conn.execute(
+                    "SELECT 1 FROM cache_entries WHERE namespace = ? AND key = ?",
+                    (entry["namespace"], entry["key"]),
+                )
+                taken = await cur.fetchone() is not None
+                if wf is None or wf[0] != "successful" or taken:
+                    await conn.rollback()
+                    settled = True
+                    return False
+                await self._execute_cache_upsert(conn, entry)
+                await conn.execute(
+                    "DELETE FROM cache_evictions WHERE namespace = ? AND key = ?",
+                    (entry["namespace"], entry["key"]),
+                )
+                await conn.commit()
+                settled = True
+                return True
+            finally:
+                if not settled:
+                    await self._safe_rollback()
+
+    async def count_successful_workflows_for_cache_key(self, cache_key: str) -> int:
+        async with self._lock:
+            cur = await self._conn_required().execute(
+                "SELECT count(*) FROM workflows WHERE cache_key = ? "
+                "AND status = 'successful'",
+                (cache_key,),
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+    async def evict_cache_entry_if_matches(
+        self,
+        namespace: str,
+        key: str,
+        file_path: str | None,
+        reason: str,
+        *,
+        generation: str | None,
+    ) -> bool:
+        """Delete the entry only if it still points at ``file_path``, and write
+        a tombstone in the same transaction. ``False`` means another writer
+        replaced (or already removed) the entry: the caller must then leave
+        the file alone. T-CDS-FINALISE-ATOMIC decision 6."""
+        async with self._lock:
+            conn = self._conn_required()
+            committed = False
+            try:
+                await self._discard_abandoned_transaction(conn)
+                cur = await conn.execute(
+                    "DELETE FROM cache_entries WHERE namespace = ? AND key = ? "
+                    "AND file_path IS ? AND generation IS ?",
+                    (namespace, key, file_path, generation),
+                )
+                hit = cur.rowcount > 0
+                if hit:
+                    await conn.execute(
+                        "INSERT INTO cache_evictions (namespace, key, file_path, "
+                        "reason, evicted_at) VALUES (?,?,?,?,?)",
+                        (namespace, key, file_path, reason, _iso_now()),
+                    )
+                await conn.commit()
+                committed = True
+                return hit
+            finally:
+                if not committed:
+                    await self._safe_rollback()
+
+    async def touch_cache_entry_if_matches(
+        self,
+        namespace: str,
+        key: str,
+        file_path: str | None,
+        accessed_at: str,
+        *,
+        generation: str | None,
+    ) -> bool:
+        """LRU bump that cannot resurrect a superseded entry: only
+        ``last_accessed_at`` changes, and only while the entry still points at
+        ``file_path``."""
+        async with self._lock:
+            conn = self._conn_required()
+            committed = False
+            try:
+                await self._discard_abandoned_transaction(conn)
+                cur = await conn.execute(
+                    "UPDATE cache_entries SET last_accessed_at = ? "
+                    "WHERE namespace = ? AND key = ? AND file_path IS ? "
+                    "AND generation IS ?",
+                    (accessed_at, namespace, key, file_path, generation),
+                )
+                await conn.commit()
+                committed = True
+                return cur.rowcount > 0
+            finally:
+                if not committed:
+                    await self._safe_rollback()
+
+    async def latest_cache_eviction(
+        self, namespace: str, key: str
+    ) -> dict[str, Any] | None:
+        """Newest tombstone for ``(namespace, key)``, or ``None``."""
+        async with self._lock:
+            cur = await self._conn_required().execute(
+                "SELECT namespace, key, file_path, reason, evicted_at "
+                "FROM cache_evictions WHERE namespace = ? AND key = ? "
+                "ORDER BY evicted_at DESC, rowid DESC LIMIT 1",
+                (namespace, key),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return {
+                "namespace": row[0],
+                "key": row[1],
+                "file_path": row[2],
+                "reason": row[3],
+                "evicted_at": row[4],
+            }
 
     async def iter_cache_entries_by_namespace(
         self, namespace: str
@@ -876,5 +1095,6 @@ def _row_to_cache_entry(row: Any) -> CacheEntry:
             "content_type": row["content_type"],
             "created_at": row["created_at"],
             "last_accessed_at": row["last_accessed_at"],
+            "generation": row["generation"],
         },
     )

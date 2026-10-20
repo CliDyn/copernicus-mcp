@@ -867,3 +867,29 @@ class TestRoundTwoFixes:
         )
         df = parse_insitu_index_file(raw)
         assert len(df) == 0
+
+
+class TestTimeResolution:
+    """Every parser emits ``datetime64[us, UTC]`` regardless of the pandas
+    version: pandas 2.x parses ISO strings to ``ns``, so the resolution is
+    pinned explicitly to match the empty-frame branches."""
+
+    _EXPECTED = "datetime64[us, UTC]"
+
+    def test_insitu_parser_time_columns_are_us(self) -> None:
+        df = parse_insitu_index_file((_FIXTURES / "insitu_index_file_v3.txt").read_bytes())
+        assert len(df) > 0
+        assert str(df["time_start"].dtype) == self._EXPECTED
+        assert str(df["time_end"].dtype) == self._EXPECTED
+
+    def test_canyon_parser_time_columns_are_us(self) -> None:
+        df = parse_canyon_index_file((_FIXTURES / "multiobs_canyon_v1.txt").read_bytes())
+        assert len(df) > 0
+        assert str(df["time_start"].dtype) == self._EXPECTED
+        assert str(df["time_end"].dtype) == self._EXPECTED
+
+    def test_path_parser_time_columns_are_us(self) -> None:
+        df = parse_cora_paths(["mediterrane/2010/CO_DMQCGL01_20100101_PR_CT.nc"])
+        assert len(df) == 1
+        assert str(df["time_start"].dtype) == self._EXPECTED
+        assert str(df["time_end"].dtype) == self._EXPECTED

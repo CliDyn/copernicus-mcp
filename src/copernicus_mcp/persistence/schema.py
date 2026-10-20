@@ -47,6 +47,10 @@ ADDITIVE_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # parent serialise their plan mutations through this counter instead of
     # clobbering each other's whole-JSON overwrites.
     ("workflows", "chunk_plan_version", "INTEGER NOT NULL DEFAULT 0"),
+    # T-CDS-FINALISE-ATOMIC: a fresh token per registration, so conditional
+    # cache maintenance can tell a replacement that REUSES the same path
+    # (CMEMS deterministic names) from the entry a stale snapshot read.
+    ("cache_entries", "generation", "TEXT"),
 ]
 
 # Index created AFTER the column migration (it references a possibly-just-added
@@ -85,6 +89,7 @@ CREATE TABLE IF NOT EXISTS cache_entries (
     content_type TEXT,
     created_at TEXT NOT NULL,
     last_accessed_at TEXT NOT NULL,
+    generation TEXT,
     PRIMARY KEY (namespace, key)
 );
 """
@@ -109,6 +114,22 @@ CREATE TABLE IF NOT EXISTS size_observations (
 );
 """
 
+# T-CDS-FINALISE-ATOMIC: one tombstone per removed cache entry, written in the
+# same transaction as the conditional delete, so a reader can tell an LRU
+# eviction (``lru``) from an entry whose file vanished (``file_missing``) or
+# one dropped on purpose (``invalidated``). Registering the key again deletes
+# its tombstones: a tombstone always describes the current registration.
+# New table, so ``CREATE IF NOT EXISTS`` migrates old databases.
+CACHE_EVICTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS cache_evictions (
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    file_path TEXT,
+    reason TEXT NOT NULL CHECK (reason IN ('lru', 'file_missing', 'invalidated')),
+    evicted_at TEXT NOT NULL
+);
+"""
+
 INDICES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_workflows_cache_key "
     "ON workflows(cache_key);",
@@ -121,6 +142,8 @@ INDICES_DDL = [
     "ON cache_entries(last_accessed_at);",
     "CREATE INDEX IF NOT EXISTS idx_size_obs_lookup "
     "ON size_observations(backend_id, dataset_id, signature);",
+    "CREATE INDEX IF NOT EXISTS idx_cache_evictions_key "
+    "ON cache_evictions(namespace, key);",
 ]
 
 
@@ -130,5 +153,6 @@ ALL_DDL: list[str] = [
     ACCEPTANCE_DDL,
     CACHE_DDL,
     SIZE_OBSERVATIONS_DDL,
+    CACHE_EVICTIONS_DDL,
     *INDICES_DDL,
 ]
