@@ -16,8 +16,8 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def env(monkeypatch: Any, tmp_path: Path) -> Path:
-    monkeypatch.setenv("COPERNICUS_MCP_STORAGE__STATE_DATABASE", str(tmp_path / "state.db"))
-    monkeypatch.setenv("COPERNICUS_MCP_STORAGE__CACHE_DIRECTORY", str(tmp_path / "cache"))
+    monkeypatch.setenv("COPERNICUS_MCP_STATE_DB", str(tmp_path / "state.db"))
+    monkeypatch.setenv("COPERNICUS_MCP_CACHE_DIR", str(tmp_path / "cache"))
     return tmp_path
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import signal
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -109,22 +110,70 @@ def _root(
 
 
 @contextlib.asynccontextmanager
-async def _build_orchestrator_for_cli() -> AsyncIterator[WorkflowOrchestrator]:
+async def _build_orchestrator_for_cli(
+    *, spawn_downloads: bool = True, fetch_wait_seconds: float = 7200.0
+) -> AsyncIterator[WorkflowOrchestrator]:
     """Build foundation + registry + orchestrator for a one-shot CLI command.
+
+    ``spawn_downloads=False`` (``cds check-status --no-download``) makes
+    status reads never start a result download. ``fetch_wait_seconds`` is how
+    long ``cds download`` waits for a foreground download (a CLI blocks; an MCP
+    tool call keeps the backend's short default). On exit the backends are
+    closed (their background finalises cancelled and awaited) BEFORE the
+    store closes — T-CDS-FINALISE-ATOMIC decision 7.
 
     Tests monkeypatch this symbol to inject a mocked orchestrator.
     """
     config = ConfigLoader().load(cli_overrides=_cli_config_overrides() or None)
     foundation = await build_foundation(config)
+    registry = None
     try:
         registry = await build_backend_registry(foundation)
+        for backend in registry.iter_backends():
+            if not spawn_downloads:
+                setter = getattr(backend, "set_download_spawning", None)
+                if setter is not None:
+                    setter(False)
+            set_wait = getattr(backend, "set_fetch_wait", None)
+            if set_wait is not None:
+                set_wait(fetch_wait_seconds)
         yield WorkflowOrchestrator(registry=registry, foundation=foundation)
     finally:
+        if registry is not None:
+            await registry.close_all()
         await foundation.persistence.close()
 
 
 def _run(coro: Any) -> Any:
-    return asyncio.run(coro)
+    """Run a one-shot command. SIGTERM cancels the main task so every
+    ``finally`` (backend close, store close) runs; the process then exits 143.
+    The CLI top level is the orchestrating layer that decides what a
+    cancellation means here (the project conventions, invariant 3)."""
+
+    async def _main() -> Any:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        installed = False
+        if task is not None:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.add_signal_handler(signal.SIGTERM, task.cancel)
+                installed = True
+        try:
+            return await coro
+        finally:
+            if installed:
+                with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                    loop.remove_signal_handler(signal.SIGTERM)
+
+    try:
+        return asyncio.run(_main())
+    except asyncio.CancelledError:
+        err_console.print(
+            "terminated (SIGTERM); pending work is resumable — run the same "
+            "command again",
+            style="yellow",
+        )
+        raise typer.Exit(code=143) from None
 
 
 def _emit(payload: dict[str, Any], *, json_out: bool, title: str | None = None) -> None:
@@ -947,14 +996,28 @@ def cds_submit(
 @cds_app.command("check-status")
 def cds_check_status(
     request_ids: list[str] = typer.Argument(...),
+    no_download: bool = typer.Option(
+        False,
+        "--no-download",
+        help=(
+            "Read status only: never start a result download in this process. "
+            "A request whose CDS job is done reads status=running, "
+            "phase=download_pending; fetch it with `cds wait` or `cds download`."
+        ),
+    ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Look up the status of one or more CDS requests (T-CDS-OPS-002: pass
     several ids to poll a whole part-set in one process instead of one CLI
     spawn per id per poll)."""
 
+    def _orchestrator() -> Any:
+        if no_download:
+            return _build_orchestrator_for_cli(spawn_downloads=False)
+        return _build_orchestrator_for_cli()
+
     async def _go() -> list[dict[str, Any]]:
-        async with _build_orchestrator_for_cli() as orch:
+        async with _orchestrator() as orch:
             return [
                 await orch.run(
                     backend="cds",
@@ -983,6 +1046,20 @@ def cds_check_status(
     )
 
 
+def _needs_local_fetch(payload: dict[str, Any]) -> bool:
+    """The CDS work is done but nothing in this process downloads the file:
+    a ``download_pending`` request (its file was LRU-evicted), or a
+    successful chunk parent whose file set is incomplete."""
+    if payload.get("phase") == "download_pending":
+        return True
+    result = payload.get("result")
+    return (
+        payload.get("status") == "successful"
+        and isinstance(result, dict)
+        and result.get("complete") is False
+    )
+
+
 @cds_app.command("wait")
 def cds_wait(
     request_id: str = typer.Argument(...),
@@ -1002,14 +1079,43 @@ def cds_wait(
 
     Polls ``check_status`` every ``--interval`` seconds. Exits 0 with
     the final payload on stdout when status is ``successful`` /
-    ``failed`` / ``cancelled``; exits 1 if ``--timeout`` elapses.
+    ``failed`` / ``cancelled``; exits 1 if ``--timeout`` elapses. A result
+    that nothing downloads (``download_pending``, or an incomplete chunk
+    parent) is fetched once within what is left of ``--timeout``.
     """
     import time as _time
+
+    def _timed_out(status: Any) -> dict[str, Any]:
+        from copernicus_mcp.errors.records import build_error_record
+
+        record = build_error_record(
+            "TimeoutError",
+            message=(
+                f"cds wait timed out after {timeout}s; last observed status={status!r}"
+            ),
+            recovery_action="retry_with_modification",
+        )
+        return {"error": record.model_dump(mode="json")}
+
+    def _left_cache_again() -> dict[str, Any]:
+        from copernicus_mcp.errors.records import build_error_record
+
+        record = build_error_record(
+            "CacheError",
+            message=(
+                "the result left the local cache again right after it was "
+                "fetched; the cache size limit may be smaller than the result"
+            ),
+            error_subclass="cache_eviction",
+            recovery_action="report_to_administrator",
+        )
+        return {"error": record.model_dump(mode="json")}
 
     async def _go() -> dict[str, Any]:
         async with _build_orchestrator_for_cli() as orch:
             deadline = _time.monotonic() + timeout
             last_progress: str | None = None
+            fetched = False
             while True:
                 envelope = await orch.run(
                     backend="cds",
@@ -1024,20 +1130,64 @@ def cds_wait(
                     err_console.print(line, style="dim")
                     last_progress = line
                 status = payload.get("status")
+                if _needs_local_fetch(payload):
+                    if fetched:
+                        # Fetched, yet missing again on the re-poll (evicted
+                        # meanwhile): never print an incomplete set as done.
+                        return _left_cache_again()
+                    # T-CDS-FINALISE-ATOMIC decision 14: the CDS job is done
+                    # and nothing downloads the file — fetch it once from the
+                    # finished job(s) within what is left of --timeout, then
+                    # poll again so the output keeps `wait`'s usual shape.
+                    remaining = deadline - _time.monotonic()
+                    if remaining <= 0:
+                        return _timed_out(status)
+                    registry = getattr(orch, "_registry", None)
+                    if registry is not None:
+                        for b in registry.iter_backends():
+                            set_wait = getattr(b, "set_fetch_wait", None)
+                            if set_wait is not None:
+                                set_wait(remaining)
+                    from copernicus_mcp.backends.cds.tools import (
+                        _TARGET_UNUSED_SENTINEL,
+                    )
+
+                    result = await orch.run(
+                        backend="cds",
+                        operation="fetch",
+                        params={
+                            "request_id": request_id,
+                            "target": _TARGET_UNUSED_SENTINEL,
+                        },
+                    )
+                    if "error" in result:
+                        err = result["error"]
+                        if not (
+                            isinstance(err, dict)
+                            and err.get("error_subclass") == "result_not_ready"
+                        ):
+                            return result
+                        # Another process is writing the file: poll on, within
+                        # the deadline (R10 codex M2).
+                        left = deadline - _time.monotonic()
+                        if left <= 0:
+                            return _timed_out(status)
+                        await asyncio.sleep(min(max(0.0, interval), left))
+                        if _time.monotonic() >= deadline:
+                            return _timed_out(status)
+                        continue
+                    fetched = True
+                    continue
                 if status in _TERMINAL_STATUSES:
                     return envelope
+                left = deadline - _time.monotonic()
+                if left <= 0:
+                    return _timed_out(status)
+                # Never sleep past the deadline, and never start a poll after
+                # it (R11: a background repair reads `downloading` here).
+                await asyncio.sleep(min(max(0.0, interval), left))
                 if _time.monotonic() >= deadline:
-                    from copernicus_mcp.errors.records import build_error_record
-
-                    record = build_error_record(
-                        "TimeoutError",
-                        message=(
-                            f"cds wait timed out after {timeout}s; last observed status={status!r}"
-                        ),
-                        recovery_action="retry_with_modification",
-                    )
-                    return {"error": record.model_dump(mode="json")}
-                await asyncio.sleep(max(0.0, interval))
+                    return _timed_out(status)
 
     envelope = _run(_go())
     if "error" in envelope:
@@ -1057,9 +1207,22 @@ def cds_download(
             "cache location). Reserved for future use."
         ),
     ),
+    timeout: float | None = typer.Option(
+        None,
+        "--timeout",
+        help=(
+            "Seconds to wait for a foreground download when the CDS job is done "
+            "but the file is not local yet (default 7200)."
+        ),
+    ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Resolve the cached file descriptor for a successful CDS request.
+    """Resolve the file descriptor for a CDS request, downloading it if needed.
+
+    A request whose CDS job is done but whose file is not local yet is
+    downloaded in the foreground. A successful request whose local cache entry
+    was lost is repaired from disk or re-fetched from the finished CDS job — no
+    new CDS job.
 
     No bytes are returned (the project conventions invariant 1). The descriptor's
     ``filepath`` points at the canonical cache location; ``--target``
@@ -1068,8 +1231,13 @@ def cds_download(
 
     from copernicus_mcp.backends.cds.tools import _TARGET_UNUSED_SENTINEL
 
+    def _orchestrator() -> Any:
+        if timeout is not None:
+            return _build_orchestrator_for_cli(fetch_wait_seconds=timeout)
+        return _build_orchestrator_for_cli()
+
     async def _go() -> dict[str, Any]:
-        async with _build_orchestrator_for_cli() as orch:
+        async with _orchestrator() as orch:
             return await orch.run(
                 backend="cds",
                 operation="fetch",

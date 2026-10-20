@@ -234,3 +234,20 @@ def test_budget_policy_validates_fanout_thresholds() -> None:
         BudgetPolicy(cds_auto_chunk_confirm_above=-1)
     with pytest.raises(ValidationError):  # nonsensical zero hard cap
         BudgetPolicy(cds_auto_chunk_max_chunks=0)
+
+
+def test_unit_tests_are_isolated_from_host_setup() -> None:
+    """The autouse guard in ``tests/unit/conftest.py`` keeps the developer's
+    own config file, exported ``COPERNICUS_MCP_*`` variables, state DB and
+    credential files out of unit tests: the default config must come out
+    with shipped defaults and every path under the sandboxed HOME."""
+    from copernicus_mcp.auth.resolver import CredentialResolver
+    from copernicus_mcp.config import ConfigLoader
+
+    cfg = ConfigLoader().load()
+    home = Path.home()
+    assert cfg.budget.cds_licence_accept_enabled is False
+    assert cfg.storage.state_database.is_relative_to(home)
+    assert cfg.storage.cache_directory.is_relative_to(home)
+    assert home.name.startswith("home")
+    assert CredentialResolver().resolve("cds") is None

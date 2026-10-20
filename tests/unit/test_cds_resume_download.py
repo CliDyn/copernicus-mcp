@@ -216,6 +216,16 @@ def _parts_in(foundation) -> list[Path]:
     return sorted(_staging(foundation).glob("*.part"))
 
 
+def _part_for(backend, rid: str) -> Path:
+    """This backend's own resume part (T-CDS-FINALISE-ATOMIC: parts are keyed
+    by request AND owning process)."""
+    from copernicus_mcp.backends.cds.backend import _part_basename
+
+    return backend.foundation.cache.staging_root_for("cds") / _part_basename(
+        rid, backend._part_owner
+    )
+
+
 @pytest.mark.asyncio
 async def test_lost_download_task_keeps_the_part_and_the_next_poll_resumes(
     foundation, monkeypatch
@@ -260,7 +270,7 @@ async def test_lost_download_task_keeps_the_part_and_the_next_poll_resumes(
     # Review round 1 (codex HIGH-1): the part is keyed by REQUEST id, not by
     # cache key — two rows sharing a cache_key (force_refresh) are different
     # remote jobs with different result objects and must never share a part.
-    assert parts[0].name == f"{rid}.part"
+    assert parts[0] == _part_for(backend, rid)
     row = await foundation.persistence.fetch_workflow(rid)
     # Not terminal — nothing is wrong yet; the request is still resumable.
     assert row["status"] in ("queued", "running")
@@ -302,9 +312,9 @@ async def test_size_change_invalidates_the_stale_part(
     # Plant a stale part + meta claiming a DIFFERENT expected size.
     staging = _staging(foundation)
     staging.mkdir(parents=True, exist_ok=True)
-    part = staging / f"{rid}.part"
+    part = _part_for(backend, rid)
     part.write_bytes(b"old-bytes")
-    (staging / f"{rid}.part.meta.json").write_text(
+    (Path(str(_part_for(backend, rid)) + ".meta.json")).write_text(
         json.dumps({"expected_size": 123, "location": _FakeResults.location})
     )
 
@@ -341,9 +351,9 @@ async def test_changed_result_location_resets_the_part(
 
     staging = _staging(foundation)
     staging.mkdir(parents=True, exist_ok=True)
-    part = staging / f"{rid}.part"
+    part = _part_for(backend, rid)
     part.write_bytes(_PAYLOAD[:_HALF])  # right size prefix, WRONG object
-    (staging / f"{rid}.part.meta.json").write_text(
+    (Path(str(_part_for(backend, rid)) + ".meta.json")).write_text(
         json.dumps(
             {
                 "expected_size": len(_PAYLOAD),
@@ -560,12 +570,14 @@ async def test_complete_part_is_promoted_without_redownload(
 
     staging = _staging(foundation)
     staging.mkdir(parents=True, exist_ok=True)
-    (staging / f"{rid}.part").write_bytes(_PAYLOAD)  # complete
-    (staging / f"{rid}.part.meta.json").write_text(
+    (_part_for(backend, rid)).write_bytes(_PAYLOAD)  # complete
+    (Path(str(_part_for(backend, rid)) + ".meta.json")).write_text(
         json.dumps(
             {"expected_size": len(_PAYLOAD), "location": _FakeResults.location}
         )
     )
+    # Decision 16: the writer that finished flagged its part.
+    backend_mod._mark_part_complete(_part_for(backend, rid))
 
     final = None
     for _ in range(4):
@@ -600,9 +612,9 @@ async def test_failed_transfer_disowns_its_complete_looking_part(
 
     staging = _staging(foundation)
     staging.mkdir(parents=True, exist_ok=True)
-    part = staging / f"{rid}.part"
+    part = _part_for(backend, rid)
     part.write_bytes(b"?" * len(_PAYLOAD))  # full length, suspect bytes
-    (staging / f"{rid}.part.meta.json").write_text(
+    (Path(str(_part_for(backend, rid)) + ".meta.json")).write_text(
         json.dumps(
             {"expected_size": len(_PAYLOAD), "location": _FakeResults.location}
         )

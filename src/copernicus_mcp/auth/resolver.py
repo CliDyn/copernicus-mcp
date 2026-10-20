@@ -86,7 +86,7 @@ def _parse_cdsapi_rc(path: Path) -> dict[str, str]:
     with two recognised keys: ``url`` and ``key``. Malformed YAML returns
     an empty dict — caller falls through to ``None``.
     """
-    import yaml  # type: ignore[import-untyped]
+    import yaml
 
     out: dict[str, str] = {}
     try:
