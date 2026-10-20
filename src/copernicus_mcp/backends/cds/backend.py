@@ -21,15 +21,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import errno
 import json
 import math
+import os
 import re
+import shutil
 import threading
 import time
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -606,6 +610,8 @@ def _sweep_stale_parts(
         candidates = [
             *staging_root.glob("*.part"),
             *staging_root.glob("*.part.meta.json"),
+            # An adoption copy killed with its process (``_adopt_foreign_part``).
+            *staging_root.glob(".*.part.*.tmp"),
         ]
     except OSError:
         return
@@ -618,15 +624,163 @@ def _sweep_stale_parts(
                 path.unlink()
 
 
-def _part_basename(request_id: str) -> str:
-    """Stable, filesystem-safe part filename keyed by the REQUEST id.
+def _safe_request_stem(request_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", request_id)
+
+
+def _part_basename(request_id: str, owner: str) -> str:
+    """Filesystem-safe part filename keyed by the REQUEST id and the owning
+    process.
 
     Review round 1 (codex HIGH-1): keyed by request, NOT by cache key — two
     workflow rows sharing a cache_key (force_refresh) are different remote
     jobs with different result objects, and their concurrent finalises must
-    never append to the same file. The request id is stable across polls and
-    processes, which is all resume needs."""
-    return re.sub(r"[^A-Za-z0-9._-]", "_", request_id) + ".part"
+    never append to the same file.
+
+    T-CDS-FINALISE-ATOMIC code review round 1: also keyed by the owning
+    PROCESS (``owner``). A shared part let two processes append to one inode;
+    the promoted, hard-linked result then kept growing after it was
+    registered, and racing promotions failed fine jobs. One writer per part
+    inode now; another process's part is resumed only by copying it
+    (``_adopt_foreign_part``)."""
+    return f"{_safe_request_stem(request_id)}.{owner}.part"
+
+
+def _foreign_parts(staging_root: Path, request_id: str, own: Path) -> list[Path]:
+    """Parts of ``request_id`` written by other processes, including the
+    unowned ``<rid>.part`` of 0.7.0."""
+    stem = _safe_request_stem(request_id)
+    try:
+        found = [*staging_root.glob(f"{stem}.*.part"), staging_root / f"{stem}.part"]
+    except OSError:
+        return []
+    out: list[Path] = []
+    for p in found:
+        if p == own or p in out:
+            continue
+        # ``<stem>.<owner>.part`` only: a longer stem that merely starts with
+        # this one (``<stem>x.<owner>.part``) never matches the glob above, and
+        # a dotted request id cannot collide because owners are hex.
+        if p.exists():
+            out.append(p)
+    return out
+
+
+def _adopt_foreign_part(foreign: Path, own: Path) -> bool:
+    """Blocking: copy a STALE foreign part (and its meta sidecar) into this
+    process's own part. ``False`` when the own part already exists (an earlier,
+    cancelled adoption or a retry got there first): nothing is replaced.
+
+    Copying gives the bytes a new inode, so the foreign writer — if it was
+    only stalled — keeps writing ITS file and can never touch ours. The
+    foreign part is NOT removed here (code review round 2: removing it under
+    a live writer made that writer's library fail a fine job); stale parts of
+    a request are removed after its row commits ``successful``
+    (``_discard_stale_parts``). ``OSError`` (the foreign part vanished
+    meanwhile) propagates; the caller backs off."""
+    tmp = own.with_name(f".{own.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        before = _part_identity(foreign)
+        recorded = _read_sidecar(foreign)
+        shutil.copyfile(foreign, tmp)
+        try:
+            after: dict[str, int] | None = _part_identity(foreign)
+        except OSError:
+            after = None
+        # R9 codex HIGH-1: the copy inherits the flag only if the sidecar
+        # vouched for exactly the generation copied and nothing changed it
+        # during the copy.
+        vouched = (
+            recorded.get("complete") is True
+            and recorded.get("identity") == before
+            and after == before
+        )
+        try:
+            os.link(tmp, own)
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            if exc.errno not in _NO_LINK_ERRNOS or own.exists():
+                raise
+            os.replace(tmp, own)
+        if recorded:
+            record: dict[str, Any] = {
+                k: recorded[k] for k in ("expected_size", "location") if k in recorded
+            }
+            if vouched:
+                record["complete"] = True
+                record["identity"] = _part_identity(own)
+            Path(f"{own}.meta.json").write_text(json.dumps(record))
+        return True
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _discard_stale_parts(staging_root: Path, request_id: str) -> None:
+    """Blocking: after ``request_id`` committed ``successful``, remove its
+    parts nobody is writing (older than the live window), with sidecars. A
+    live part belongs to a writer that will finish, lose the commit race and
+    clean up after itself."""
+    now = time.time()
+    for p in _foreign_parts(staging_root, request_id, staging_root / ""):
+        with contextlib.suppress(OSError):
+            if now - p.stat().st_mtime >= _FOREIGN_PART_LIVE_SECONDS:
+                p.unlink()
+                with contextlib.suppress(OSError):
+                    Path(str(p) + ".meta.json").unlink()
+
+
+_NO_LINK_ERRNOS: Final[frozenset[int]] = frozenset(
+    {errno.EXDEV, errno.EPERM, errno.EMLINK, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+
+
+# Decision 13: a ``download_pending`` read says who downloads it. A placeholder,
+# not the id: the sanitiser redacts UUID-shaped job ids inside text.
+_DOWNLOAD_PENDING_HINT: Final[str] = (
+    "The CDS job is done but nothing is downloading its result: run "
+    "`copernicus-mcp cds download <request_id>` (or the "
+    "cds_download_request_result tool), or `copernicus-mcp cds wait "
+    "<request_id>`."
+)
+
+
+# A foreign part modified this recently has a live writer in another process:
+# do not start a second transfer beside it (report ``downloading`` instead).
+_FOREIGN_PART_LIVE_SECONDS: Final[float] = 90.0
+
+
+def _request_file_tag(request_id: str) -> str:
+    """The request part of a published file name, ``cds_<hash>.<tag>.<ext>``
+    (T-CDS-FINALISE-ATOMIC decision 3): the first 12 alphanumerics of the
+    request id. Two requests never share a final path, and a request finds
+    its own earlier publication by name."""
+    return re.sub(r"[^0-9A-Za-z]", "", request_id)[:12] or "x"
+
+
+def _published_name(
+    short_hash: str, request_id: str, staged: Path, *, unique: bool = False
+) -> str:
+    """``cds_<hash>.<tag>.<ext>``; ``unique`` adds ``.r<random>`` for a
+    re-fetch, which must never collide with (and silently reuse) a rejected or
+    being-evicted file under the plain name."""
+    tag = _request_file_tag(request_id)
+    if unique:
+        tag = f"{tag}.r{uuid.uuid4().hex[:8]}"
+    return f"cds_{short_hash}.{tag}{''.join(staged.suffixes)}"
+
+
+class _BackOff(OSError):
+    """Another process owns this download right now (decision 18): not a
+    failed job. A finalise reports ``downloading``; a re-fetch reports
+    ``result_not_ready``."""
+
+
+class _PartVanished(_BackOff):
+    """Our own part disappeared under the transfer: another process found it
+    stale and adopted it (``_adopt_foreign_part``). Not a failed job — the
+    adopter finishes it; this finaliser backs off."""
 
 
 def _validate_or_reset_part(
@@ -638,7 +792,10 @@ def _validate_or_reset_part(
     length, and appending to the old prefix would store a corrupt hybrid. Also
     discards a part that somehow grew past the expected size (corrupt; Range
     resume could never finish it). Always (re)writes the sidecar for the
-    object we are about to download."""
+    object we are about to download, keeping its ``complete`` flag (decision
+    16) only while the part it vouches for is kept."""
+    complete = False
+    recorded: dict[str, Any] = {}
     if part.exists():
         size_ok = False
         location_ok = False
@@ -646,19 +803,62 @@ def _validate_or_reset_part(
             recorded = json.loads(meta.read_text())
             size_ok = recorded.get("expected_size") == expected_size
             location_ok = recorded.get("location") == location
+            complete = recorded.get("complete") is True
         except (OSError, ValueError, AttributeError):
-            pass
+            recorded = {}
         try:
             oversized = part.stat().st_size > expected_size
         except OSError:
             oversized = True
         if not size_ok or not location_ok or oversized:
+            complete = False
             with contextlib.suppress(OSError):
                 part.unlink()
+    record: dict[str, Any] = {"expected_size": expected_size, "location": location}
+    if complete:
+        record["complete"] = True
+        record["identity"] = recorded.get("identity")
     meta.parent.mkdir(parents=True, exist_ok=True)
-    meta.write_text(
-        json.dumps({"expected_size": expected_size, "location": location})
-    )
+    meta.write_text(json.dumps(record))
+
+
+def _part_identity(path: Path) -> dict[str, int]:
+    """The file generation a ``complete`` flag vouches for: same inode, size
+    and modification time. ``OSError`` when the file is gone."""
+    st = path.stat()
+    return {"ino": st.st_ino, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def _read_sidecar(part: Path) -> dict[str, Any]:
+    try:
+        recorded = json.loads(Path(f"{part}.meta.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return recorded if isinstance(recorded, dict) else {}
+
+
+def _part_verified(part: Path) -> bool:
+    """Decision 16: the part's sidecar says a transfer RETURNED with exactly
+    these bytes. Size and URL alone say nothing about bytes a failed or
+    stalled writer left behind, and the flag binds to the file generation it
+    was written for (R9 codex HIGH-1: a later generation's flag must not
+    vouch for an earlier copy)."""
+    recorded = _read_sidecar(part)
+    if recorded.get("complete") is not True:
+        return False
+    try:
+        return bool(recorded.get("identity") == _part_identity(part))
+    except OSError:
+        return False
+
+
+def _mark_part_complete(part: Path) -> None:
+    """Blocking: record in the sidecar that this part's transfer returned
+    with the expected size, bound to the part's current generation."""
+    recorded = _read_sidecar(part)
+    recorded["complete"] = True
+    recorded["identity"] = _part_identity(part)
+    Path(f"{part}.meta.json").write_text(json.dumps(recorded))
 
 
 def _resumable_download(url: str, part: Path, expected_size: int) -> None:
@@ -671,15 +871,48 @@ def _resumable_download(url: str, part: Path, expected_size: int) -> None:
     thread (blocking I/O). A transfer that ENDS at the wrong size is corrupt —
     raise so the caller fails the row and discards the part rather than
     promoting garbage into the cache."""
-    multiurl.download(url, target=str(part), stream=True, resume_transfers=True)
+    try:
+        existing = part.stat().st_size
+    except FileNotFoundError:
+        existing = 0
+    if existing == expected_size and expected_size > 0:
+        if _part_verified(part):
+            # Already complete (a previous writer finished, or the adoption
+            # copy was a verified whole file). multiurl would reject it
+            # (``bytes < size``).
+            return
+        # Full length but nobody vouched for the bytes (decision 16).
+        part.unlink()
+        existing = 0
+    if existing > expected_size:
+        raise OSError(f"part holds {existing} bytes, expected {expected_size}")
+    try:
+        multiurl.download(
+            url, target=str(part), stream=True, resume_transfers=True
+        )
+    except FileNotFoundError as exc:
+        # multiurl checks the size by PATH after the stream; a part removed
+        # under the writer surfaces here, inside the library.
+        if not part.exists():
+            raise _PartVanished(f"part {part.name} vanished mid-transfer") from exc
+        raise
     try:
         actual = part.stat().st_size
+    except FileNotFoundError as exc:
+        raise _PartVanished(f"part {part.name} was adopted by another process") from exc
     except OSError:
         actual = -1
     if actual != expected_size:
         raise OSError(
             f"download ended at {actual} bytes, expected {expected_size}"
         )
+
+
+def _is_remote_not_found(exc: BaseException) -> bool:
+    """The datastores client raises ``requests.HTTPError``; a purged or
+    unknown job answers 404 (or 410)."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status in (404, 410)
 
 
 def _fetch_results_handle(inner_client: Any, request_id: str) -> Any:
@@ -700,6 +933,7 @@ def _spawn_daemon_transfer(
     part: Path,
     expected_size: int,
     slots: threading.Semaphore,
+    adopt_from: Path | None = None,
 ) -> asyncio.Future[None]:
     """Run ``_resumable_download`` on a DAEMON thread bridged to an asyncio
     future.
@@ -730,8 +964,39 @@ def _spawn_daemon_transfer(
     def _run() -> None:
         failure: Exception | None
         try:
+            if adopt_from is not None:
+                # T-CDS-FINALISE-ATOMIC: the adoption copy is the first step of
+                # THIS tracked transfer, so a cancelled finalise leaves one
+                # future the next poll waits on — never a stray copy racing a
+                # second transfer into the same part.
+                try:
+                    _adopt_foreign_part(adopt_from, part)
+                except FileNotFoundError as exc:
+                    raise _PartVanished(
+                        f"foreign part {adopt_from.name} vanished during adoption"
+                    ) from exc
+                except OSError as exc:
+                    # Adoption is an optimisation: a full disk or another
+                    # user's unreadable part must not stall the row. Log it
+                    # and download from scratch.
+                    logger.warning(
+                        "foreign part adoption failed; downloading from scratch",
+                        extra={
+                            "part": adopt_from.name,
+                            "error_class": type(exc).__name__,
+                            "errno": exc.errno,
+                        },
+                    )
+                _validate_or_reset_part(
+                    part, Path(str(part) + ".meta.json"), expected_size, location
+                )
             with slots:  # bounded concurrency; excess transfers queue here
-                _resumable_download(location, part, expected_size)
+                try:
+                    _resumable_download(location, part, expected_size)
+                except Exception:
+                    _disown_complete_looking_part(part, expected_size)
+                    raise
+                _mark_part_complete(part)
         except Exception as exc:  # noqa: BLE001 — thread→future boundary
             failure = exc
         else:
@@ -741,10 +1006,110 @@ def _spawn_daemon_transfer(
         except RuntimeError:
             pass  # loop closed mid-transfer; the part resumes elsewhere
 
+    fut.add_done_callback(_mark_retrieved)
     threading.Thread(
         target=_run, name=f"cds-transfer-{part.stem}", daemon=True
     ).start()
     return fut
+
+
+def _disown_complete_looking_part(part: Path, expected_size: int) -> None:
+    """Blocking: a transfer that RAISED disowns a part that looks complete
+    (T-CDS-FINALISE-ATOMIC decision 16): the library can fail after the last
+    byte, and no later call — in this process or another — may promote bytes
+    nobody vouched for. An incomplete prefix stays: it is a valid Range
+    resume point."""
+    try:
+        looks_complete = part.stat().st_size >= expected_size
+    except OSError:
+        return
+    if looks_complete:
+        with contextlib.suppress(OSError):
+            part.unlink()
+        with contextlib.suppress(OSError):
+            Path(str(part) + ".meta.json").unlink()
+
+
+def _mark_retrieved(fut: asyncio.Future[Any]) -> None:
+    """Decision 17: retrieve a daemon bridge's exception so asyncio never
+    prints it raw. ``asyncio.shield`` stops doing that for us once its outer
+    future is cancelled (a timed-out awaiter), and the SDK's message is not
+    sanitised. Awaiters still receive the exception."""
+    if not fut.cancelled():
+        fut.exception()
+
+
+def _spawn_daemon_call(func: Any, *args: Any) -> asyncio.Future[Any]:
+    """Run a blocking ``func(*args)`` on a daemon thread bridged to a future
+    (same reasoning as ``_spawn_daemon_transfer``: a one-shot CLI must be able
+    to exit while it runs; ``asyncio.to_thread`` would join it at shutdown)."""
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[Any] = loop.create_future()
+
+    def _finish(result: Any, failure: Exception | None) -> None:
+        if fut.cancelled():
+            return
+        if failure is None:
+            fut.set_result(result)
+        else:
+            fut.set_exception(failure)
+
+    def _run() -> None:
+        result: Any = None
+        failure: Exception | None = None
+        try:
+            result = func(*args)
+        except Exception as exc:  # noqa: BLE001 — thread→future boundary
+            failure = exc
+        try:
+            loop.call_soon_threadsafe(_finish, result, failure)
+        except RuntimeError:
+            pass
+
+    fut.add_done_callback(_mark_retrieved)
+    threading.Thread(target=_run, name="cds-refetch", daemon=True).start()
+    return fut
+
+
+def _retire_adopted_name(old: Path, registered: Path) -> None:
+    """Blocking: after ``registered`` committed, drop the adopted file's old
+    name (an unregistered second link to the same bytes would keep their
+    space alive past an eviction) and move its provenance sidecar along."""
+    sidecar = old.with_suffix(old.suffix + ".provenance.json")
+    with contextlib.suppress(OSError):
+        sidecar.replace(
+            registered.with_suffix(registered.suffix + ".provenance.json")
+        )
+    with contextlib.suppress(OSError):
+        old.unlink()
+
+
+def _result_extension(name: str, short_hash: str, request_id: str) -> str:
+    """The data extension (``.nc``, ``.zip`` …) of a published CDS file name:
+    0.7.0's ``cds_<hash>.<ext>``, ``cds_<hash>.<tag>.<ext>``, or a re-fetch's
+    ``cds_<hash>.<tag>.r<rand>.<ext>``."""
+    prefix = f"cds_{short_hash}."
+    rest = name[len(prefix) :] if name.startswith(prefix) else name.partition(".")[2]
+    parts = [p for p in rest.split(".") if p]
+    if parts[:1] == [_request_file_tag(request_id)]:
+        parts = parts[1:]
+    if parts and re.fullmatch(r"r[0-9a-f]{8}", parts[0]):
+        parts = parts[1:]
+    return "".join(f".{p}" for p in parts)
+
+
+def _seconds_left(deadline: float | None) -> float | None:
+    """Time left until ``deadline`` (event-loop time); ``None`` = unbounded."""
+    if deadline is None:
+        return None
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+def _mtime_or_zero(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _cds_result_metadata(cache_path: Path) -> dict[str, Any]:
@@ -883,6 +1248,12 @@ def _make_cdsapi_client(
         debug=False,
         retry_max=_CDSAPI_RETRY_MAX,
         sleep_max=_CDSAPI_SLEEP_MAX,
+        # T-CDS-FINALISE-ATOMIC decision 9: keep the remote result after a
+        # download, so a lost local registration can be re-fetched from the
+        # finished job. (The datastores client already defaults to False; the
+        # classic cdsapi client defaults to True and deletes the job after the
+        # first download.)
+        delete=False,
     )
 
 
@@ -1065,11 +1436,15 @@ def _chunk_parent_response(
                 if files
                 else "no files remain on disk"
             )
+            # Decision 15: a read starts nothing; the parent download repairs
+            # each missing chunk from its own finished CDS job.
             result["recovery_hint"] = (
                 "This result set is INCOMPLETE: the files for chunk indices "
-                f"{evicted} were evicted from the cache. Re-run the original "
-                "request with __options.force_refresh=true to re-retrieve the "
-                f"missing chunks; {remaining}."
+                f"{evicted} are not in the local cache. Run `copernicus-mcp "
+                "cds download <request_id>` with this parent's request_id (or "
+                "the cds_download_request_result tool): it re-registers or "
+                "re-downloads the missing chunks from their finished CDS jobs, "
+                f"no new order; {remaining}."
             )
     else:
         result = {
@@ -1361,6 +1736,25 @@ class CdsBackend(AbstractBackend):
         # agent on the transfer. In-memory only — a restart loses the task and the
         # next poll re-spawns it (the row is still "running" + the CDS job is done).
         self._downloads: dict[str, asyncio.Task[Any]] = {}
+        # T-CDS-FINALISE-ATOMIC: this process's resume parts carry this token
+        # (one writer per part inode across processes).
+        self._part_owner = uuid.uuid4().hex[:12]
+        # T-CDS-FINALISE-ATOMIC decisions 7-8: a one-shot CLI may read status
+        # without starting downloads (``cds check-status --no-download``), and
+        # ``close`` stops new finalises before the store closes.
+        self._spawn_downloads = True
+        self._closing = False
+        # Decision 9: how long ``fetch_result`` waits for a foreground
+        # finalise. Short for an MCP tool call; the CLI raises it.
+        self._fetch_wait_seconds = 30.0
+        # One repair / re-fetch per request at a time in this process (two tool
+        # calls on one lost entry must not race on the same part). Entries are
+        # kept: one small lock per repaired request.
+        self._repair_locks: dict[str, asyncio.Lock] = {}
+        # Decision 13: how a background repair (started by a status read)
+        # ended, kept for the next read so the answer never depends on whether
+        # it ended inside the inline grace. Popped when reported.
+        self._repair_failures: dict[str, BaseException] = {}
         # T-CDS-ASYNC-DOWNLOAD review HIGH: serialise the spawn DECISION (is there a
         # live download? else create one) so two concurrent first-polls cannot
         # double-spawn and cancel / the done-callback always target the one live
@@ -1399,7 +1793,7 @@ class CdsBackend(AbstractBackend):
         (accepted trade-off). Runs via done-callback so a still-writing daemon
         thread finishes on its own clock."""
         staging_root = self.foundation.cache.staging_root_for("cds")
-        part_key = str(staging_root / _part_basename(request_id))
+        part_key = str(staging_root / _part_basename(request_id, self._part_owner))
         transfer = self._part_transfers.get(part_key)
         if transfer is None:
             return
@@ -3461,12 +3855,12 @@ class CdsBackend(AbstractBackend):
 
         status = row["status"]
         # Already-terminal rows return their cached state without an SDK
-        # call. The cache-eviction synthetic error (CMEMS parity) is
-        # applied on the way out. Codex spec review HIGH-1: do NOT mark
-        # stale running rows failed — CDS jobs can validly stay
-        # queued/running for hours; the source of truth is the remote
-        # poll below, never local age.
-        if status in ("successful", "failed", "cancelled"):
+        # call. Codex spec review HIGH-1: do NOT mark stale running rows
+        # failed — CDS jobs can validly stay queued/running for hours; the
+        # source of truth is the remote poll below, never local age.
+        if status == "successful":
+            return await self._successful_status(row)
+        if status in ("failed", "cancelled"):
             return await self._build_status_envelope(row, status)
 
         return await self._poll_and_maybe_finalise(request_id, row)
@@ -3568,6 +3962,10 @@ class CdsBackend(AbstractBackend):
                 "cancelled",
             ):
                 return await self._build_status_envelope(fresh, fresh["status"])
+            if not self._spawn_downloads or self._closing:
+                # Status only: the CDS job is done, the download is left to a
+                # caller that drives it (``cds wait`` / ``cds download``).
+                return await self._download_pending_envelope(row)
             new_task: asyncio.Task[Any] = asyncio.create_task(
                 self._finalise_successful(
                     request_id=request_id,
@@ -3597,6 +3995,33 @@ class CdsBackend(AbstractBackend):
                 )
         return await self._downloading_envelope(row)
 
+    def set_fetch_wait(self, seconds: float) -> None:
+        """How long ``fetch_result`` waits for a foreground download of a
+        CDS-done pending row before reporting it not ready."""
+        self._fetch_wait_seconds = max(0.0, seconds)
+
+    def set_download_spawning(self, enabled: bool) -> None:
+        """``False``: ``check_status`` never starts a result download (one-shot
+        status reads; chunk children included, they poll through the same
+        path). A CDS-done row then reads ``running`` +
+        ``phase="download_pending"``."""
+        self._spawn_downloads = enabled
+
+    async def close(self) -> None:
+        """Stop starting finalises, cancel the in-flight ones and wait for
+        them while the store is still open (T-CDS-FINALISE-ATOMIC decision 7):
+        a one-shot CLI used to close the store under a running finalise. A
+        cancelled finalise leaves its row pending — the next poll completes it.
+        Daemon transfer threads keep their bytes for that next poll."""
+        self._closing = True
+        tasks = [t for t in self._downloads.values() if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            # Collects the children's outcomes (their CancelledError included);
+            # cancellation of THIS coroutine still propagates out of gather.
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _downloading_envelope(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """A non-terminal ``running`` envelope with a ``phase="downloading"`` hint —
         the CDS job is done but the result file is still being fetched in the
@@ -3604,6 +4029,127 @@ class CdsBackend(AbstractBackend):
         env = await self._build_status_envelope(row, "running")
         env["phase"] = "downloading"
         return env
+
+    async def _download_pending_envelope(
+        self, row: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """``running`` + ``phase="download_pending"``: the CDS job is done and
+        nothing in this process is fetching the file; the hint names the
+        commands that do."""
+        env = await self._build_status_envelope(row, "running")
+        env["phase"] = "download_pending"
+        env["next_action_hint"] = _DOWNLOAD_PENDING_HINT
+        return env
+
+    async def _successful_status(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """Decision 13: a ``successful`` row whose cache entry is gone reads as
+        a pending download, never ``failed`` — the CDS job did succeed. The
+        read never changes the stored row.
+
+        - entry present → ``successful`` with the file;
+        - an earlier background repair of it ended in an error → reported now
+          (``remote_result_expired`` → ``failed``; anything else raised);
+        - LRU-evicted → ``download_pending``: a poll over a set larger than
+          the cache must not re-download in a loop;
+        - otherwise start or join a background repair (same registry as a
+          finalise: ``close()`` cancels it, a second poll joins it), wait the
+          inline grace → ``successful``, or ``downloading``."""
+        request_id = row["request_id"]
+        cache_key = row.get("cache_key") or ""
+        storage_key = _cache_storage_key(cache_key)
+        cache = self.foundation.cache
+        path = await cache.lookup_file(storage_key) if cache_key else None
+        if path is not None:
+            # The file is back (another process repaired it): an earlier
+            # repair's failure is moot — forget it (R11).
+            self._repair_failures.pop(request_id, None)
+            return await self._build_status_envelope(
+                row, "successful", _resolved_filepath=path
+            )
+        failure = self._repair_failures.pop(request_id, None)
+        if failure is not None:
+            return await self._repair_failure_status(row, failure)
+        tomb = (
+            await self.foundation.persistence.latest_cache_eviction(
+                "file", storage_key
+            )
+            if cache_key
+            else None
+        )
+        if tomb is not None and tomb.get("reason") == "lru":
+            return await self._download_pending_envelope(row)
+        async with self._downloads_mutex:
+            task = self._downloads.get(request_id)
+            if task is None or task.done():
+                if task is not None:
+                    self._downloads.pop(request_id, None)
+                if not self._spawn_downloads or self._closing:
+                    return await self._download_pending_envelope(row)
+                task = asyncio.create_task(
+                    self._repair_or_refetch(row, deadline=None)
+                )
+                self._downloads[request_id] = task
+
+                def _drop_repair(t: asyncio.Task[Any]) -> None:
+                    self._on_repair_done(request_id, t)
+
+                task.add_done_callback(_drop_repair)
+        grace = self.foundation.config.budget.cds_download_inline_grace_seconds
+        await asyncio.wait({task}, timeout=max(0.0, grace))
+        if task.done():
+            path = await cache.lookup_file(storage_key) if cache_key else None
+            if path is not None:
+                self._repair_failures.pop(request_id, None)
+                return await self._build_status_envelope(
+                    row, "successful", _resolved_filepath=path
+                )
+            failure = self._repair_failures.pop(request_id, None)
+            if failure is not None:
+                return await self._repair_failure_status(row, failure)
+        return await self._downloading_envelope(row)
+
+    def _on_repair_done(self, request_id: str, task: asyncio.Task[Any]) -> None:
+        """Keep how a background repair ended for the next status read. A
+        ``result_not_ready`` (another process is writing it) is not an
+        outcome: the next read simply looks again."""
+        if self._downloads.get(request_id) is task:
+            self._downloads.pop(request_id, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            self._repair_failures.pop(request_id, None)
+            return
+        if (
+            isinstance(exc, CopernicusMcpError)
+            and exc.error_record.error_subclass == "result_not_ready"
+        ):
+            return
+        self._repair_failures[request_id] = exc
+        logger.warning(
+            "background CDS repair failed for %s: %s",
+            request_id,
+            self.foundation.sanitiser.sanitise(str(exc)),
+        )
+
+    async def _repair_failure_status(
+        self, row: Mapping[str, Any], exc: BaseException
+    ) -> dict[str, Any]:
+        """``remote_result_expired`` is the one honest ``failed`` for a
+        ``successful`` row: CDS purged the result, only a new order helps
+        (the stored row stays ``successful``; a later read asks CDS again).
+        Any other repair error is raised, like a poll error."""
+        if isinstance(exc, CopernicusMcpError):
+            if exc.error_record.error_subclass == "remote_result_expired":
+                env = await self._build_status_envelope(row, "failed")
+                env["error_details"] = self.foundation.sanitiser.sanitise(
+                    exc.error_record.model_dump(mode="json")
+                )
+                return env
+            raise exc
+        if isinstance(exc, Exception):
+            raise self._wrap_sdk_error(exc, op="refetch") from exc
+        raise exc
 
     def _on_download_done(self, request_id: str, task: asyncio.Task[Any]) -> None:
         """Drop a finished background download from the in-flight map and log a
@@ -3622,6 +4168,93 @@ class CdsBackend(AbstractBackend):
                 request_id,
                 self.foundation.sanitiser.sanitise(str(exc)),
             )
+
+    def _plan_part_transfer(
+        self,
+        *,
+        request_id: str,
+        part_path: Path,
+        expected_size: int,
+        location: str,
+    ) -> asyncio.Future[None] | None:
+        """Decision 18: the one resume-part policy of finalise and re-fetch.
+
+        Returns the transfer to await — this process's live one (adopted after
+        a cancelled awaiter, codex HIGH-3: never a second appender), or a new
+        one whose first step copies a stale foreign part — or ``None`` when the
+        part is already complete (a previous writer finished after its awaiter
+        died; multiurl would reject it). Raises ``_BackOff`` beside another
+        process's live part, or when a file vanishes mid-scan (its owner
+        promoted it)."""
+        staging_root = part_path.parent
+        meta_path = Path(f"{part_path}.meta.json")
+        part_key = str(part_path)
+        prior_failed = False
+        transfer = self._part_transfers.get(part_key)
+        if transfer is not None and transfer.done():
+            if not transfer.cancelled():
+                # Review round 4 (codex MEDIUM): a transfer that RAISED
+                # disowns its bytes; the worker already removed a
+                # complete-looking part (decision 16) — this is the backstop.
+                prior_failed = transfer.exception() is not None
+            self._part_transfers.pop(part_key, None)
+            transfer = None
+        if transfer is not None:
+            return transfer
+        adopt_from: Path | None = None
+        if not part_path.exists():
+            try:
+                foreign = _foreign_parts(staging_root, request_id, part_path)
+                now = time.time()
+                sized = [(p.stat().st_mtime, p.stat().st_size, p) for p in foreign]
+                if any(now - m < _FOREIGN_PART_LIVE_SECONDS for m, _, _ in sized):
+                    raise _BackOff(f"another process is writing {request_id!r}")
+                if sized:
+                    adopt_from = max(sized, key=lambda t: t[1])[2]
+            except _BackOff:
+                raise
+            except FileNotFoundError as exc:
+                raise _BackOff(f"a part of {request_id!r} moved mid-scan") from exc
+            except OSError as exc:
+                logger.warning(
+                    "foreign part adoption skipped; downloading from scratch",
+                    extra={
+                        "request_id": request_id,
+                        "error_class": type(exc).__name__,
+                        "errno": exc.errno,
+                    },
+                )
+                adopt_from = None
+        if prior_failed:
+            try:
+                looks_complete = part_path.stat().st_size == expected_size
+            except OSError:
+                looks_complete = False
+            if looks_complete:
+                with contextlib.suppress(OSError):
+                    part_path.unlink()
+        staging_root.mkdir(parents=True, exist_ok=True)
+        _validate_or_reset_part(part_path, meta_path, expected_size, location)
+        try:
+            full_length = part_path.stat().st_size == expected_size
+        except OSError:
+            full_length = False
+        if full_length:
+            if _part_verified(part_path):
+                return None
+            # Decision 16: full length, unverified — download it again.
+            with contextlib.suppress(OSError):
+                part_path.unlink()
+            _validate_or_reset_part(part_path, meta_path, expected_size, location)
+        transfer = _spawn_daemon_transfer(
+            location,
+            part_path,
+            expected_size,
+            self._transfer_slots,
+            adopt_from=adopt_from,
+        )
+        self._part_transfers[part_key] = transfer
+        return transfer
 
     async def _finalise_successful(
         self,
@@ -3646,6 +4279,13 @@ class CdsBackend(AbstractBackend):
         # bypasses every ``except`` cleanup below and would otherwise leak the staged
         # file (a detached download thread can finish writing after the task cancel).
         staging: Path | None = None
+        # T-CDS-FINALISE-ATOMIC decision 2: an interrupted finalise now exits
+        # with the row still pending, so the per-row lock and the pre-flight
+        # cost are dropped only once the row is known to be terminal.
+        terminal = False
+        # Set by ``_commit_published`` as soon as the commit returned, so a
+        # later step that raises (provenance cancelled) still counts.
+        commit_state: dict[str, bool] = {}
         try:
             async with lock:
                 # Re-check under the lock — another caller may have
@@ -3660,14 +4300,34 @@ class CdsBackend(AbstractBackend):
                 ):
                     # Already terminal; nothing to do, return the cached
                     # state.
+                    terminal = True
                     return await self._build_status_envelope(row, row["status"])
+
+                short_hash = (
+                    cache_key.rsplit(":", 1)[-1] if cache_key else "unknown"
+                )
+                # T-CDS-FINALISE-ATOMIC decision 3: an earlier attempt of THIS
+                # request published its (complete, verified) file but never
+                # committed — killed between the publish and the transaction.
+                # Commit that file instead of downloading again.
+                published = await asyncio.to_thread(
+                    self.foundation.cache.find_request_publication,
+                    "cds",
+                    short_hash,
+                    _request_file_tag(request_id),
+                )
+                if published is not None:
+                    envelope, terminal = await self._commit_published(
+                        request_id=request_id,
+                        cache_key=cache_key,
+                        final_path=published,
+                        state=commit_state,
+                    )
+                    return envelope
 
                 zone = self.foundation.cache.cache_zone_for("cds")
                 staging = zone / ".staging" / uuid.uuid4().hex
                 staging.mkdir(parents=True, exist_ok=False)
-                short_hash = (
-                    cache_key.rsplit(":", 1)[-1] if cache_key else "unknown"
-                )
                 # T-CDS-018: derive extension from the persisted submit
                 # inputs so the cached file is human-recognisable.
                 row_inputs = _inputs_from_workflow_row(row) if row else {}
@@ -3675,7 +4335,6 @@ class CdsBackend(AbstractBackend):
                     short_hash, row_inputs
                 )
 
-                stored: Path | None = None
                 # T-CDS-DL-001: resumable transfers use a STABLE part directly
                 # under ``.staging/`` (keyed by the cache hash, NOT this
                 # attempt's uuid dir) so an interrupted download's bytes
@@ -3694,7 +4353,7 @@ class CdsBackend(AbstractBackend):
                 # eventually swept) after midnight, not silently re-downloaded
                 # from zero while the old day's bytes rot unreachable.
                 staging_root = self.foundation.cache.staging_root_for("cds")
-                part_name = _part_basename(request_id)
+                part_name = _part_basename(request_id, self._part_owner)
                 part_path = staging_root / part_name
                 meta_path = staging_root / f"{part_name}.meta.json"
                 try:
@@ -3720,10 +4379,10 @@ class CdsBackend(AbstractBackend):
                         # ``except Exception`` does not catch CancelledError
                         # (BaseException), so cancellation still propagates.
                         try:
-                            results = await asyncio.to_thread(
-                                _fetch_results_handle,
-                                client.client,
-                                request_id,
+                            # Decision 18: a daemon thread, so a stalled
+                            # lookup never holds a one-shot CLI's exit.
+                            results = await _spawn_daemon_call(
+                                _fetch_results_handle, client.client, request_id
                             )
                             # Strict shape check — the SDK returns a str URL
                             # and an int byte count; anything else (missing
@@ -3749,66 +4408,17 @@ class CdsBackend(AbstractBackend):
                             )
                             resume = False
                     if resume and location is not None:
-                        # Adopt a still-live writer left behind by a cancelled
-                        # task (codex HIGH-3) — never start a second appender
-                        # on the same part. A finished future's outcome is
-                        # consumed here (exception retrieved) and replaced.
+                        # Decision 18: the part policy shared with re-fetch —
+                        # join this process's live transfer, back off beside
+                        # another process's live part (``_BackOff`` →
+                        # ``downloading`` below), adopt a stale one, or spawn.
                         part_key = str(part_path)
-                        prior_failed = False
-                        transfer = self._part_transfers.get(part_key)
-                        if transfer is not None and transfer.done():
-                            if not transfer.cancelled():
-                                # Review round 4 (codex MEDIUM): a transfer
-                                # that RAISED disowns its bytes — the library
-                                # can fail after the last byte, and a
-                                # complete-LOOKING part from a failed
-                                # transfer must be re-fetched, not promoted.
-                                prior_failed = transfer.exception() is not None
-                            self._part_transfers.pop(part_key, None)
-                            transfer = None
-                        if transfer is None:
-                            if prior_failed:
-                                # Only a COMPLETE-looking part is suspect —
-                                # promoting it would skip the re-download
-                                # entirely. An incomplete prefix from a
-                                # failed transfer is still a valid resume
-                                # point (writes are append-only; the error
-                                # merely stopped them), and discarding it
-                                # would gut resume for ordinary network
-                                # blips.
-                                try:
-                                    looks_complete = (
-                                        part_path.stat().st_size
-                                        == expected_size
-                                    )
-                                except OSError:
-                                    looks_complete = False
-                                if looks_complete:
-                                    with contextlib.suppress(OSError):
-                                        part_path.unlink()
-                            _validate_or_reset_part(
-                                part_path, meta_path, expected_size, location
-                            )
-                            # Review round 3 (codex MEDIUM): a previous daemon
-                            # writer may have FINISHED the file after its
-                            # awaiter died. Re-downloading a complete part
-                            # trips multiurl's existing<remote assertion and
-                            # would fail a perfectly good result — promote it
-                            # directly instead.
-                            try:
-                                already_complete = (
-                                    part_path.stat().st_size == expected_size
-                                )
-                            except OSError:
-                                already_complete = False
-                            if not already_complete:
-                                transfer = _spawn_daemon_transfer(
-                                    location,
-                                    part_path,
-                                    expected_size,
-                                    self._transfer_slots,
-                                )
-                                self._part_transfers[part_key] = transfer
+                        transfer = self._plan_part_transfer(
+                            request_id=request_id,
+                            part_path=part_path,
+                            expected_size=expected_size,
+                            location=location,
+                        )
                         if transfer is not None:
                             try:
                                 # shield: cancelling THIS task must not cancel
@@ -3822,7 +4432,12 @@ class CdsBackend(AbstractBackend):
                         # Complete and size-checked: promote into this
                         # attempt's staging dir so the sniff/verify/store
                         # pipeline below runs unchanged.
-                        part_path.replace(target_path)
+                        try:
+                            part_path.replace(target_path)
+                        except FileNotFoundError as exc:
+                            raise _PartVanished(
+                                f"part {part_path.name} was adopted by another process"
+                            ) from exc
                         with contextlib.suppress(OSError):
                             meta_path.unlink()
                     else:
@@ -3836,6 +4451,7 @@ class CdsBackend(AbstractBackend):
                     await self.foundation.persistence.update_workflow_error_if_pending(
                         request_id, "failed", error_record_json
                     )
+                    terminal = True
                     with contextlib.suppress(OSError):
                         if target_path.exists():
                             target_path.unlink()
@@ -3845,11 +4461,18 @@ class CdsBackend(AbstractBackend):
                         meta_path.unlink(missing_ok=True)
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    if isinstance(exc, _BackOff):
+                        # Decision 2 / 18: another process writes this result
+                        # (or adopted our stalled part) — not a failure.
+                        return await self._downloading_envelope(
+                            row or {"request_id": request_id}
+                        )
                     wrapped = self._wrap_sdk_error(exc, op="download")
                     error_record_json = self._serialise_error_record(wrapped)
                     await self.foundation.persistence.update_workflow_error_if_pending(
                         request_id, "failed", error_record_json
                     )
+                    terminal = True
                     with contextlib.suppress(OSError):
                         if target_path.exists():
                             target_path.unlink()
@@ -3886,6 +4509,7 @@ class CdsBackend(AbstractBackend):
                         await self.foundation.persistence.update_workflow_error_if_pending(
                             request_id, "failed", error_record_json
                         )
+                        terminal = True
                         with contextlib.suppress(OSError):
                             if target_path.exists():
                                 target_path.unlink()
@@ -3941,132 +4565,60 @@ class CdsBackend(AbstractBackend):
                         await self.foundation.persistence.update_workflow_error_if_pending(
                             request_id, "failed", error_record_json
                         )
+                        terminal = True
                         with contextlib.suppress(OSError):
                             if target_path.exists():
                                 target_path.unlink()
                             staging.rmdir()
                         raise mismatch
 
-                # Round-1 HIGH-2 + Round-3 MEDIUM (codex): commit
-                # conditionally; only publish to the canonical cache
-                # AFTER we've won the race. If the row already
-                # transitioned to ``cancelled`` (or any other terminal
-                # state), drop the staged file and leave the cache
-                # entry untouched.
-                committed = await self.foundation.persistence.update_workflow_status_if_pending(
-                    request_id, "successful"
-                )
-
-                if not committed:
-                    # Race-loser: another caller settled the row. Drop
-                    # staging without touching the cache. Round-4 MEDIUM
-                    # (codex async): log cleanup failures explicitly so
-                    # leaked staging files (potentially hundreds of MB
-                    # for ERA5 pressure-levels) are visible in
-                    # observability rather than silently piling up.
-                    try:
-                        if target_path.exists():
-                            target_path.unlink()
-                        staging.rmdir()
-                    except OSError as cleanup_exc:
-                        logger.warning(
-                            "race_loser_staging_cleanup_failed",
-                            extra={
-                                "request_id": request_id,
-                                "staging_path": str(staging),
-                                "error_class": type(cleanup_exc).__name__,
-                                "error_message": str(cleanup_exc),
-                            },
-                        )
-                    fresh = await self.foundation.persistence.fetch_workflow(
-                        request_id
-                    )
-                    return await self._build_status_envelope(
-                        fresh or {"request_id": request_id, "cache_key": cache_key},
-                        (fresh or {"status": "failed"})["status"],
-                    )
-
-                # Won the race — now publish to the canonical cache.
-                # ``store_file`` moves the staged file out of the
-                # staging dir and atomically replaces the previous
-                # entry for this key (if any). Round-3 MEDIUM: this
-                # only happens after the workflow row commits to
-                # ``successful``, so a force_refresh that loses the
-                # race no longer overwrites another workflow's content.
-                #
-                # Round-4 HIGH (codex async re-review): if ``store_file``
-                # raises after the row has already been committed
-                # ``successful``, the row would be stuck terminal-success
-                # with no cache file, and ``check_status`` would
-                # synthesise ``cache_eviction`` forever. Revert the row
-                # to ``failed`` (unconditionally — the row is at
-                # ``successful`` which we just set ourselves under the
-                # finalise lock; cancel can't have raced past us).
+                # T-CDS-FINALISE-ATOMIC decisions 1-3: publish the verified
+                # file under its request-scoped final name, THEN commit the
+                # row ``successful`` and its cache entry in one transaction.
+                # An interruption before the commit leaves a pending row and a
+                # published file the next attempt commits (see above); the
+                # row is never ``successful`` without its entry.
+                final_path = self.foundation.cache.cache_zone_for(
+                    "cds"
+                ) / _published_name(short_hash, request_id, target_path)
                 try:
-                    # Round-2 (local-MED3): persist the same content_type
-                    # we report in the envelope, so the cache_entries row
-                    # and the agent-visible metadata agree.
-                    stored = await self.foundation.cache.store_file(
-                        _cache_storage_key(cache_key),
+                    await asyncio.to_thread(
+                        self.foundation.cache.publish_request_file,
                         target_path,
-                        backend_id="cds",
-                        content_type=_cds_content_type_for_extension(
-                            target_path.name
-                        ),
+                        final_path,
                     )
                 except Exception as exc:  # noqa: BLE001
                     wrapped = self._wrap_sdk_error(exc, op="cache_store")
                     error_record_json = self._serialise_error_record(wrapped)
-                    await self.foundation.persistence.update_workflow_error(
+                    await self.foundation.persistence.update_workflow_error_if_pending(
                         request_id, "failed", error_record_json
                     )
-                    with contextlib.suppress(OSError):
-                        if target_path.exists():
-                            target_path.unlink()
-                        staging.rmdir()
+                    terminal = True
                     raise wrapped from exc
-                with contextlib.suppress(OSError):
-                    if target_path.exists():
-                        target_path.unlink()
-                    staging.rmdir()
-
-                # T-CDS-011.5: write provenance sidecar + persistence
-                # row, mirroring CMEMS behaviour (T-024). Failure here
-                # is non-fatal — the row is already ``successful`` and
-                # the file is in the cache; sidecar is recoverable from
-                # the SQLite provenance table even if the JSON write
-                # raced. CancelledError must NOT be swallowed
-                # (the project conventions invariant 3).
-                try:
-                    await self._record_cds_provenance(
-                        request_id=request_id,
-                        cache_key=cache_key,
-                        stored_path=stored,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning("provenance recording failed", exc_info=True)
-
-                fresh = await self.foundation.persistence.fetch_workflow(
-                    request_id
+                envelope, terminal = await self._commit_published(
+                    request_id=request_id,
+                    cache_key=cache_key,
+                    final_path=final_path,
+                    state=commit_state,
                 )
-                return await self._build_status_envelope(
-                    fresh or {"request_id": request_id, "cache_key": cache_key},
-                    "successful",
-                    _resolved_filepath=stored,
-                )
+                return envelope
         finally:
             # Round-1 HIGH-5: drop the per-request lock once we exit so
             # ``self._finalise_locks`` cannot grow without bound. Safe
             # because terminal status is permanent — any later
             # ``check_status`` takes the early-return terminal branch
             # and never reaches ``_finalise_successful``.
-            self._finalise_locks.pop(request_id, None)
-            # T-CDS-EST2-003: terminal transition — drop the pre-flight cost
-            # (covers the success path after the observation write AND the
-            # download/sniff/cache_store failure paths that raise through here).
-            self._inflight_costing.pop(request_id, None)
+            #
+            # T-CDS-FINALISE-ATOMIC: only when the row is terminal — an
+            # interrupted finalise leaves it pending, and popping the lock
+            # then would let the next poll start a second finalise beside a
+            # waiter still parked on the old lock.
+            if terminal or commit_state.get("terminal"):
+                self._finalise_locks.pop(request_id, None)
+                # T-CDS-EST2-003: terminal transition — drop the pre-flight
+                # cost (covers the success path after the observation write AND
+                # the download/sniff/publish failure paths).
+                self._inflight_costing.pop(request_id, None)
             # T-CDS-ASYNC-DOWNLOAD review MEDIUM: best-effort remove a leftover staging
             # dir. Success + every except path already cleaned it; this catches the
             # CANCELLED path, which otherwise leaks a full result file under .staging.
@@ -4075,6 +4627,101 @@ class CdsBackend(AbstractBackend):
                     for leftover in staging.iterdir():
                         leftover.unlink()
                     staging.rmdir()
+
+    async def _commit_published(
+        self,
+        *,
+        request_id: str,
+        cache_key: str,
+        final_path: Path,
+        state: dict[str, bool] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Commit a published file: row ``successful`` + cache entry in one
+        transaction (T-CDS-FINALISE-ATOMIC decision 1). Returns the status
+        envelope and whether the row is now terminal.
+
+        Decision 2: a failure here never writes ``failed`` and never deletes
+        the file — the COMMIT may have reached the database even though the
+        caller saw an error (lost acknowledgement on a network filesystem),
+        and a still-pending row reuses the file on its next attempt. Only a
+        positively LOST race (the conditional flip hit nothing) removes the
+        own file, and only if no entry points at it."""
+        storage_key = _cache_storage_key(cache_key)
+        try:
+            committed = await self.foundation.cache.register_success(
+                request_id=request_id,
+                cache_key=storage_key,
+                file_path=final_path,
+                content_type=_cds_content_type_for_extension(final_path.name),
+            )
+        except CopernicusMcpError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "cache_register_failed",
+                extra={
+                    "request_id": request_id,
+                    "error_class": type(exc).__name__,
+                },
+            )
+            raise self._wrap_sdk_error(exc, op="cache_register") from exc
+        if state is not None:
+            # Either way the row is settled now (ours or someone else's).
+            state["terminal"] = True
+
+        if not committed:
+            # Race-loser: a cancel or another finaliser settled the row. Only
+            # a CANCELLED row's file is dead; for any other state keep it —
+            # it may be the only complete copy of the result, and repair
+            # (``cds download``) can still register it.
+            fresh = await self.foundation.persistence.fetch_workflow(request_id)
+            entry = await self.foundation.persistence.lookup_cache_entry(
+                "file", storage_key
+            )
+            if (
+                fresh is not None
+                and fresh["status"] == "cancelled"
+                and (entry is None or entry.get("file_path") != str(final_path))
+            ):
+                with contextlib.suppress(OSError):
+                    final_path.unlink()
+            return (
+                await self._build_status_envelope(
+                    fresh or {"request_id": request_id, "cache_key": cache_key},
+                    (fresh or {"status": "failed"})["status"],
+                ),
+                True,
+            )
+
+        await asyncio.to_thread(
+            _discard_stale_parts,
+            self.foundation.cache.staging_root_for("cds"),
+            request_id,
+        )
+        # T-CDS-011.5: write provenance sidecar + persistence row, mirroring
+        # CMEMS behaviour (T-024). Failure here is non-fatal — the row is
+        # already ``successful`` and the file is registered. CancelledError
+        # must NOT be swallowed (the project conventions invariant 3).
+        try:
+            await self._record_cds_provenance(
+                request_id=request_id,
+                cache_key=cache_key,
+                stored_path=final_path,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("provenance recording failed", exc_info=True)
+
+        fresh = await self.foundation.persistence.fetch_workflow(request_id)
+        return (
+            await self._build_status_envelope(
+                fresh or {"request_id": request_id, "cache_key": cache_key},
+                "successful",
+                _resolved_filepath=final_path,
+            ),
+            True,
+        )
 
     async def _sibling_chunk_succeeded(self, request_id: str) -> bool:
         """True iff ``request_id`` is a chunk child with a SUCCESSFUL sibling
@@ -4463,14 +5110,15 @@ class CdsBackend(AbstractBackend):
         *,
         _resolved_filepath: Path | None = None,
     ) -> dict[str, Any]:
-        """Canonical ``check_status`` envelope. Resolves the cache file
-        for successful rows; if the file was LRU-evicted, surface a
-        synthetic ``CacheError(cache_eviction)`` rather than returning
-        ``status=successful`` with an empty result (mirrors CMEMS at
-        backends/cmems/backend.py:849)."""
+        """Canonical ``check_status`` envelope. Resolves the cache file for
+        successful rows. A successful row whose file is not in the cache never
+        reads ``successful`` with an empty result, nor ``failed`` (decision
+        13): it reads ``running`` + ``download_pending``. ``check_status``
+        itself goes through ``_successful_status``, which also repairs."""
         result_block: dict[str, Any] = {}
         error_details = _decode_error_record(row.get("error_record_json"))
         emitted_status = status
+        download_pending = False
 
         if status == "successful":
             cache_key_value = row.get("cache_key") or ""
@@ -4491,19 +5139,10 @@ class CdsBackend(AbstractBackend):
                     "provenance": {},
                 }
             else:
-                # Synthetic eviction: don't mutate the persisted row,
-                # but downgrade the response so the caller doesn't
-                # observe ``successful`` with an unusable result.
-                emitted_status = "failed"
-                error_details = build_error_record(
-                    "CacheError",
-                    message=(
-                        f"file for {row.get('request_id')!r} was evicted "
-                        "from the cache; re-run the request to repopulate"
-                    ),
-                    error_subclass="cache_eviction",
-                    recovery_action="retry_with_modification",
-                ).model_dump(mode="json")
+                # Don't mutate the persisted row; the CDS job did succeed, only
+                # the local file is missing.
+                emitted_status = "running"
+                download_pending = True
 
         # T-CDS-000 smoke regression: do NOT sanitise the whole
         # envelope — the sanitiser's UUID pattern would redact the
@@ -4511,7 +5150,7 @@ class CdsBackend(AbstractBackend):
         # only user-influenced field; sanitise it specifically. Other
         # fields are safe by construction (row column values, the
         # constructed ``filepath``/``uri``, and ``size_bytes``).
-        return {
+        envelope = {
             "status": emitted_status,
             "request_id": row.get("request_id"),
             "submitted_at": row.get("created_at"),
@@ -4524,6 +5163,10 @@ class CdsBackend(AbstractBackend):
             ),
             "result": result_block,
         }
+        if download_pending:
+            envelope["phase"] = "download_pending"
+            envelope["next_action_hint"] = _DOWNLOAD_PENDING_HINT
+        return envelope
 
     def _wrap_sdk_error(self, exc: Exception, *, op: str) -> BackendError:
         """Coerce any SDK exception to ``BackendError`` with the message
@@ -4721,6 +5364,72 @@ class CdsBackend(AbstractBackend):
         descriptors, evicted = await self._parent_chunk_descriptors(
             plan, require_all=True
         )
+        child_errors: list[dict[str, Any]] = []
+        if evicted:
+            # Decision 12: repair / re-fetch each missing child by its own CDS
+            # job id before giving up on the set.
+            by_index = {
+                c.get("index"): c.get("child_request_id")
+                for c in plan.get("chunks", [])
+                if isinstance(c, dict)
+            }
+            # One budget for the whole set, not one per child.
+            deadline = asyncio.get_running_loop().time() + self._fetch_wait_seconds
+            outcome: dict[int, str | None] = {}
+            for index in evicted:
+                cid = by_index.get(index)
+                child = (
+                    await self.foundation.persistence.fetch_workflow(cid)
+                    if cid
+                    else None
+                )
+                if child is not None and child["status"] == "successful":
+                    try:
+                        await self._repair_or_refetch(child, deadline=deadline)
+                    except CopernicusMcpError as exc:
+                        outcome[index] = exc.error_record.error_subclass
+            descriptors, evicted = await self._parent_chunk_descriptors(
+                plan, require_all=True
+            )
+            # R10 Fable M1: a purged child or one still being written is not an
+            # eviction — say which, so `cds wait` polls on or the caller orders
+            # again.
+            child_errors = [
+                {"chunk_index": i, "error_subclass": outcome[i]}
+                for i in evicted
+                if outcome.get(i)
+            ]
+            expired = [i for i in evicted if outcome.get(i) == "remote_result_expired"]
+            pending = [i for i in evicted if outcome.get(i) == "result_not_ready"]
+            if expired:
+                raise BackendError(
+                    f"chunked workflow {parent_id!r}: chunk result(s) purged",
+                    record=build_error_record(
+                        "BackendError",
+                        message=(
+                            f"CDS no longer holds the result of chunk(s) {expired} "
+                            "of this request; resubmit it (force_refresh=true)"
+                        ),
+                        error_subclass="remote_result_expired",
+                        recovery_action="modify_request_parameters",
+                        context={"chunk_indices": expired, "chunked": True},
+                    ),
+                )
+            if pending:
+                raise BackendError(
+                    f"chunked workflow {parent_id!r}: chunk(s) still downloading",
+                    record=build_error_record(
+                        "BackendError",
+                        message=(
+                            f"chunk(s) {pending} of this request are still being "
+                            "downloaded; call again (the transfers resume)"
+                        ),
+                        error_subclass="result_not_ready",
+                        retryable=True,
+                        recovery_action="retry_automatic",
+                        context={"chunk_indices": pending, "chunked": True},
+                    ),
+                )
         if evicted:
             raise CacheError(
                 f"chunked workflow {parent_id!r}: {len(evicted)} chunk file(s) evicted",
@@ -4728,12 +5437,17 @@ class CdsBackend(AbstractBackend):
                     "CacheError",
                     message=(
                         f"chunked workflow {parent_id!r} successful but chunk "
-                        f"file(s) at index {evicted} were evicted from cache; "
+                        f"file(s) at index {evicted} are not in the local cache "
+                        "and could not be recovered from their CDS jobs; "
                         "re-submit with force_refresh=true to repopulate"
                     ),
                     error_subclass="cache_eviction",
                     recovery_action="retry_with_modification",
-                    context={"evicted_chunk_indices": evicted, "chunked": True},
+                    context={
+                        "evicted_chunk_indices": evicted,
+                        "chunked": True,
+                        "child_errors": child_errors,
+                    },
                 ),
             )
         result = _parent_multifile_result(descriptors)
@@ -4753,6 +5467,381 @@ class CdsBackend(AbstractBackend):
             "result": result,
         }
 
+    async def _fetch_in_foreground(
+        self, request_id: str, row: Mapping[str, Any], *, deadline: float
+    ) -> None:
+        """Decision 9: a pending row — poll CDS, and if its job is done, run
+        (or join) the finalise and wait up to ``_fetch_wait_seconds``. The
+        row records the outcome; the caller re-reads it."""
+        await self._poll_and_maybe_finalise(request_id, row)
+        task = self._downloads.get(request_id)
+        if task is None or task.done():
+            return
+        try:
+            # shield: a timeout here must not cancel the finalise itself.
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+        except TimeoutError:
+            pass
+        except CopernicusMcpError:
+            pass  # recorded on the row (failed) — reported by the caller
+
+    async def _repair_or_refetch(
+        self, row: Mapping[str, Any], *, deadline: float | None
+    ) -> Path:
+        """Serialised per request; a caller that waited finds the entry the
+        previous one registered. ``deadline`` (loop time) bounds the wait for
+        the lock, the results lookup and the transfer (``result_not_ready``);
+        ``None`` is unbounded (a background repair)."""
+        request_id = row["request_id"]
+        lock = self._repair_locks.setdefault(request_id, asyncio.Lock())
+        if lock.locked():
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=_seconds_left(deadline))
+            except TimeoutError:
+                raise self._result_not_ready(request_id) from None
+        else:
+            await lock.acquire()  # free: no wait, even past the deadline
+        try:
+            existing = await self.foundation.cache.lookup_file(
+                _cache_storage_key(row.get("cache_key") or "")
+            )
+            if existing is not None:
+                return existing
+            return await self._repair_or_refetch_locked(row, deadline=deadline)
+        finally:
+            lock.release()
+
+    def _result_not_ready(self, request_id: str) -> BackendError:
+        return BackendError(
+            f"re-download of {request_id!r} still running",
+            record=build_error_record(
+                "BackendError",
+                message=(
+                    "the result is being re-downloaded from the finished CDS "
+                    "job and is not complete yet"
+                ),
+                error_subclass="result_not_ready",
+                retryable=True,
+                recovery_action="retry_automatic",
+                next_action_hint=(
+                    "Call the download again (it resumes), or block with "
+                    "`copernicus-mcp cds download <request_id> --timeout N`."
+                ),
+                context={"request_id": request_id},
+            ),
+        )
+
+    async def _repair_or_refetch_locked(
+        self, row: Mapping[str, Any], *, deadline: float | None
+    ) -> Path:
+        """Decision 10: give a ``successful`` row without a cache entry its
+        file back, without a new CDS job. In order: the row's own
+        request-scoped publication; 0.7.0's canonical file, only when this is
+        the key's ONLY successful row (force-refresh history makes equal size
+        no proof of identity); else re-download from the finished job. Every
+        adopted file must have the size CDS reports for the job."""
+        request_id = row["request_id"]
+        cache_key = row.get("cache_key") or ""
+        storage_key = _cache_storage_key(cache_key)
+        short_hash = cache_key.rsplit(":", 1)[-1] if cache_key else "unknown"
+        cache = self.foundation.cache
+        self._check_credentials_or_raise()
+        assert self._auth_adapter is not None
+        client = _make_cdsapi_client(
+            self._auth_adapter, dataset_id=_dataset_id_from_workflow_row(row)
+        )
+        lookup = _spawn_daemon_call(_fetch_results_handle, client.client, request_id)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.shield(lookup), timeout=_seconds_left(deadline)
+            )
+        except TimeoutError:
+            raise self._result_not_ready(request_id) from None
+        except Exception as exc:  # noqa: BLE001
+            if _is_remote_not_found(exc):
+                # The id goes under ``context`` only: the sanitiser redacts a
+                # UUID-shaped job id inside text.
+                raise BackendError(
+                    f"CDS no longer holds the result of {request_id!r}",
+                    record=build_error_record(
+                        "BackendError",
+                        message=(
+                            "CDS no longer holds the result of this request: "
+                            "results are purged after the retention window. "
+                            "Submit the request again."
+                        ),
+                        error_subclass="remote_result_expired",
+                        recovery_action="modify_request_parameters",
+                        next_action_hint=(
+                            "Resubmit the same request (force_refresh=true) to "
+                            "get a new CDS job."
+                        ),
+                        context={"request_id": request_id},
+                    ),
+                ) from exc
+            raise self._wrap_sdk_error(exc, op="refetch") from exc
+        raw_size = getattr(results, "content_length", None)
+        size = raw_size if isinstance(raw_size, int) and raw_size >= 0 else None
+        raw_location = getattr(results, "location", None)
+        location = raw_location if isinstance(raw_location, str) else None
+        # A path an eviction / invalidation just removed from the store (its
+        # tombstone is committed, its file maybe not unlinked yet): adopting
+        # it would let that evictor delete a freshly registered file.
+        tomb = await self.foundation.persistence.latest_cache_eviction(
+            "file", storage_key
+        )
+        doomed = (
+            tomb.get("file_path")
+            if tomb is not None and tomb.get("reason") in ("lru", "invalidated")
+            else None
+        )
+
+        def _size_ok(p: Path) -> bool:
+            if str(p) == doomed:
+                return False
+            try:
+                return size is not None and p.stat().st_size == size
+            except OSError:
+                return False
+
+        # Adoption order: the row's original publication, 0.7.0's legacy file,
+        # then a re-fetch name. An original first (R10): a ``.r<rand>`` name may
+        # be another repair's fresh, not-yet-registered copy, and retiring it
+        # would leak the file it was copied from.
+        adopt: Path | None = None
+        own = await asyncio.to_thread(
+            cache.find_request_publication,
+            "cds",
+            short_hash,
+            _request_file_tag(request_id),
+        )
+        if own is not None and _size_ok(own):
+            adopt = own
+        if adopt is None and (
+            await self.foundation.persistence.count_successful_workflows_for_cache_key(
+                cache_key
+            )
+            == 1
+        ):
+            legacy = await asyncio.to_thread(
+                cache.find_legacy_files, "cds", short_hash
+            )
+            for candidate in sorted(legacy, key=_mtime_or_zero, reverse=True):
+                if _size_ok(candidate):
+                    adopt = candidate
+                    break
+        if adopt is None:
+            refetched = await asyncio.to_thread(
+                partial(
+                    cache.find_request_publication,
+                    "cds",
+                    short_hash,
+                    _request_file_tag(request_id),
+                    refetched=True,
+                )
+            )
+            if refetched is not None and _size_ok(refetched):
+                adopt = refetched
+        chosen: Path | None = None
+        adopted_from: Path | None = None
+        if adopt is not None:
+            # Decision 19: never register an existing path in place — an
+            # evictor may hold a committed claim on it.
+            try:
+                chosen = await self._republish_adopted(adopt, short_hash, request_id)
+                adopted_from = adopt
+            except OSError:
+                chosen = None  # gone meanwhile (its evictor won): download
+            if chosen is not None and not _size_ok(chosen):
+                with contextlib.suppress(OSError):
+                    chosen.unlink()
+                chosen = adopted_from = None
+            if chosen is None:
+                # The adopted name vanished: most likely a competing repair
+                # registered it and retired the old name — take its entry
+                # rather than downloading again.
+                existing = await cache.lookup_file(storage_key)
+                if existing is not None:
+                    return existing
+        if chosen is None:
+            chosen = await self._download_published_copy(
+                row,
+                client,
+                short_hash,
+                size=size,
+                location=location,
+                deadline=deadline,
+            )
+        if await cache.register_repaired(
+            request_id=request_id,
+            cache_key=storage_key,
+            file_path=chosen,
+            content_type=_cds_content_type_for_extension(chosen.name),
+        ):
+            if adopted_from is not None:
+                await asyncio.to_thread(_retire_adopted_name, adopted_from, chosen)
+            return chosen
+        existing = await cache.lookup_file(storage_key)
+        if existing is None or existing != chosen:
+            # Lost the repair race: our fresh name is nobody's file (the
+            # adopted source stays — it may be the winner's).
+            with contextlib.suppress(OSError):
+                chosen.unlink()
+        if existing is not None:
+            return existing
+        raise CacheError(
+            f"could not register the result of {request_id!r}",
+            record=build_error_record(
+                "CacheError",
+                message=(
+                    f"the result of {request_id!r} could not be registered "
+                    "(the row changed meanwhile); check its status"
+                ),
+                error_subclass="cache_entry_missing",
+                recovery_action="report_to_administrator",
+            ),
+        )
+
+    async def _republish_adopted(
+        self, adopted: Path, short_hash: str, request_id: str
+    ) -> Path:
+        """Decision 19: give an adopted file a fresh unique request-scoped
+        name (hard link, or copy where links are refused) so the path about to
+        be registered is one no evictor has a stale claim on. The old name
+        stays until the registration commits (R9 codex HIGH-2: it may be the
+        file a competing repair just registered); ``_retire_adopted_name``
+        removes it then. ``OSError`` when the file vanished meanwhile."""
+        cache = self.foundation.cache
+        ext = _result_extension(adopted.name, short_hash, request_id)
+        fresh = cache.cache_zone_for("cds") / _published_name(
+            short_hash, request_id, Path(f"result{ext}"), unique=True
+        )
+        # A daemon thread (R10 codex M3): where hard links are refused this is
+        # a full copy, and ``asyncio.run`` would join a default-executor copy
+        # at a one-shot CLI's exit.
+        await _spawn_daemon_call(
+            partial(cache.publish_request_file, adopted, fresh, keep_source=True)
+        )
+        return fresh
+
+    async def _download_published_copy(
+        self,
+        row: Mapping[str, Any],
+        client: Any,
+        short_hash: str,
+        *,
+        size: int | None,
+        location: str | None,
+        deadline: float | None,
+    ) -> Path:
+        """Re-download a finished job's result and publish it under a fresh
+        request-scoped name; the published size must equal what CDS reports.
+
+        Bounded by ``deadline``: the transfer runs on a daemon thread (resumable
+        through this process's own part when the result handle allows it), so
+        a call that runs out of time reports ``result_not_ready`` and the next
+        call joins or resumes the same transfer."""
+        request_id = row["request_id"]
+        cache = self.foundation.cache
+
+        zone = cache.cache_zone_for("cds")
+        staging = zone / ".staging" / uuid.uuid4().hex
+        staging.mkdir(parents=True, exist_ok=False)
+        try:
+            target = staging / _cds_target_filename(
+                short_hash, _inputs_from_workflow_row(row)
+            )
+            try:
+                if multiurl is not None and location is not None and size is not None:
+                    staging_root = cache.staging_root_for("cds")
+                    part = staging_root / _part_basename(request_id, self._part_owner)
+                    key = str(part)
+                    try:
+                        # Decision 18: the finalise's part policy, so a
+                        # one-shot recovery resumes the previous process's
+                        # prefix and never writes beside a live one.
+                        transfer = self._plan_part_transfer(
+                            request_id=request_id,
+                            part_path=part,
+                            expected_size=size,
+                            location=location,
+                        )
+                        if transfer is not None:
+                            try:
+                                await asyncio.wait_for(
+                                    asyncio.shield(transfer),
+                                    timeout=_seconds_left(deadline),
+                                )
+                            except TimeoutError:
+                                raise self._result_not_ready(request_id) from None
+                            finally:
+                                if transfer.done():
+                                    self._part_transfers.pop(key, None)
+                        try:
+                            part.replace(target)
+                        except FileNotFoundError as exc:
+                            raise _PartVanished(f"part {part.name} moved") from exc
+                    except _BackOff:
+                        raise self._result_not_ready(request_id) from None
+                    with contextlib.suppress(OSError):
+                        Path(f"{part}.meta.json").unlink()
+                else:
+                    call = _spawn_daemon_call(
+                        client.client.download_results, request_id, str(target)
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(call), timeout=_seconds_left(deadline)
+                        )
+                    except TimeoutError:
+                        raise self._result_not_ready(request_id) from None
+                sniffed = _cds_sniff_extension(target)
+                if sniffed is not None and target.suffix != sniffed:
+                    renamed = target.with_name(f"cds_{short_hash}{sniffed}")
+                    target.replace(renamed)
+                    target = renamed
+                final = zone / _published_name(
+                    short_hash, request_id, target, unique=True
+                )
+                await _spawn_daemon_call(cache.publish_request_file, target, final)
+            except CopernicusMcpError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise self._wrap_sdk_error(exc, op="refetch") from exc
+            try:
+                wrong_size = size is not None and final.stat().st_size != size
+            except OSError:
+                # A competing repair adopted and retired our fresh name (R11):
+                # its registration refuses the vanished path and the caller
+                # takes the winner's entry.
+                wrong_size = False
+            if wrong_size:
+                with contextlib.suppress(OSError):
+                    final.unlink()
+                raise BackendError(
+                    f"re-downloaded result of {request_id!r} has the wrong size",
+                    record=build_error_record(
+                        "BackendError",
+                        message=(
+                            "the re-downloaded file does not have the size CDS "
+                            "reports for the job; nothing was registered"
+                        ),
+                        error_subclass="sdk_download_failure",
+                        retryable=True,
+                        recovery_action="retry_automatic",
+                        context={"request_id": request_id},
+                    ),
+                )
+            return final
+        finally:
+            with contextlib.suppress(OSError):
+                for leftover in staging.iterdir():
+                    leftover.unlink()
+                staging.rmdir()
+
     async def fetch_result(self, request_id: str, target: Path) -> dict[str, Any]:
         row = await self.foundation.persistence.fetch_workflow(request_id)
         if row is None:
@@ -4767,7 +5856,14 @@ class CdsBackend(AbstractBackend):
         # T-CDS-CHUNK-003: a chunked parent returns the multi-file descriptor set.
         if row.get("chunk_plan_json"):
             return await self._fetch_chunk_parent_result(row)
+        # T-CDS-FINALISE-ATOMIC decision 9: a pending row downloads in the
+        # foreground once its CDS job is done.
+        deadline = asyncio.get_running_loop().time() + self._fetch_wait_seconds
+        if row["status"] in ("queued", "running"):
+            await self._fetch_in_foreground(request_id, row, deadline=deadline)
+            row = await self.foundation.persistence.fetch_workflow(request_id) or row
         if row["status"] != "successful":
+            pending = row["status"] in ("queued", "running")
             raise BackendError(
                 f"workflow {request_id!r} status={row['status']!r}, no result",
                 record=build_error_record(
@@ -4778,21 +5874,22 @@ class CdsBackend(AbstractBackend):
                     ),
                     error_subclass="result_not_ready",
                     recovery_action="report_to_administrator",
+                    next_action_hint=(
+                        "The CDS job has not finished (or its download is still "
+                        "running). Block on it with `copernicus-mcp cds wait "
+                        "<request_id>`, or poll check_status."
+                        if pending
+                        else None
+                    ),
+                    context={"request_id": request_id} if pending else None,
                 ),
             )
 
         cache_key = row["cache_key"] or ""
         cache_path = await self.foundation.cache.lookup_file(_cache_storage_key(cache_key))
         if cache_path is None:
-            raise CacheError(
-                f"workflow {request_id!r} successful but file missing from cache",
-                record=build_error_record(
-                    "CacheError",
-                    message=(f"workflow {request_id!r} successful but file evicted"),
-                    error_subclass="cache_eviction",
-                    recovery_action="retry_with_modification",
-                ),
-            )
+            # Decision 10: repair or re-fetch, never a new CDS job.
+            cache_path = await self._repair_or_refetch(row, deadline=deadline)
 
         # T-CDS-000 smoke regression: envelope is safe by construction;
         # don't run the UUID-redacting sanitiser over the whole result.
@@ -4947,6 +6044,15 @@ class CdsBackend(AbstractBackend):
         if dl is not None and not dl.done():
             dl.cancel()
         self._reap_part_transfer(request_id)
+        if committed:
+            # T-CDS-FINALISE-ATOMIC decision 5: a file this request published
+            # but never registered (finalise killed before its commit) can no
+            # longer be committed — the row is now cancelled.
+            await asyncio.to_thread(
+                self.foundation.cache.discard_request_publications,
+                "cds",
+                _request_file_tag(request_id),
+            )
         # T-CDS-EST2-003 + codex Tier-A MEDIUM: drop the pre-flight cost ONLY if this
         # cancel won the terminal-state race. If a finalizer beat us to ``successful``,
         # leave the entry — its ``_finalise_successful`` ``finally`` pops it AFTER

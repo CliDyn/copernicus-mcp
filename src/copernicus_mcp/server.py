@@ -294,6 +294,7 @@ async def serve(config: CopernicusMcpConfig) -> None:
     logger.info("starting copernicus-mcp server")
 
     foundation = await build_foundation(config)
+    registry = None
     try:
         registry = await build_backend_registry(foundation)
         server = build_server(
@@ -308,6 +309,10 @@ async def serve(config: CopernicusMcpConfig) -> None:
         # propagates with our canonical error_class.
         await server.run_stdio_async()
     finally:
+        # T-CDS-FINALISE-ATOMIC: stop background finalises while the store is
+        # still open, then close it.
+        if registry is not None:
+            await registry.close_all()
         await foundation.persistence.close()
 
 

@@ -57,6 +57,8 @@ class CacheEntry(TypedDict):
     content_type: str | None
     created_at: str
     last_accessed_at: str
+    # Set by the store on every registration (T-CDS-FINALISE-ATOMIC).
+    generation: NotRequired[str | None]
 
 
 class PersistenceBackend(Protocol):
@@ -131,6 +133,36 @@ class PersistenceBackend(Protocol):
         self, namespace: str, key: str
     ) -> CacheEntry | None: ...
     async def delete_cache_entry(self, namespace: str, key: str) -> bool: ...
+    async def register_entry_if_missing(
+        self, request_id: str, entry: CacheEntry
+    ) -> bool: ...
+    async def count_successful_workflows_for_cache_key(
+        self, cache_key: str
+    ) -> int: ...
+    async def commit_success_with_cache_entry(
+        self, request_id: str, entry: CacheEntry
+    ) -> tuple[bool, CacheEntry | None]: ...
+    async def evict_cache_entry_if_matches(
+        self,
+        namespace: str,
+        key: str,
+        file_path: str | None,
+        reason: str,
+        *,
+        generation: str | None,
+    ) -> bool: ...
+    async def touch_cache_entry_if_matches(
+        self,
+        namespace: str,
+        key: str,
+        file_path: str | None,
+        accessed_at: str,
+        *,
+        generation: str | None,
+    ) -> bool: ...
+    async def latest_cache_eviction(
+        self, namespace: str, key: str
+    ) -> dict[str, Any] | None: ...
     def iter_cache_entries_by_namespace(
         self, namespace: str
     ) -> AsyncIterator[CacheEntry]: ...

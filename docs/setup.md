@@ -168,6 +168,7 @@ These are convenient one-line overrides without a config file:
 | `COPERNICUS_MCP_CDS_CHUNK_RETRY_LIMIT`  | `budget.cds_chunk_retry_limit`  |
 | `COPERNICUS_MCP_CDS_CHUNK_RETRY_BACKOFF_SECONDS` | `budget.cds_chunk_retry_backoff_seconds` |
 | `COPERNICUS_MCP_CDS_RESUME_DOWNLOADS` | `budget.cds_resume_downloads` |
+| `COPERNICUS_MCP_CDS_DOWNLOAD_INLINE_GRACE_SECONDS` | `budget.cds_download_inline_grace_seconds` |
 
 ### Pacing large split requests
 

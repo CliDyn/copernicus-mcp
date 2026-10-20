@@ -2978,13 +2978,16 @@ async def test_check_status_runs_sdk_in_thread_pool(foundation, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_check_status_cache_evicted_after_successful_synthesises_error(
+async def test_check_status_lost_file_after_successful_is_refetched_not_failed(
     foundation, monkeypatch
 ) -> None:
-    """If the row is ``successful`` but the cache file was LRU-evicted,
-    surface a synthetic ``cache_eviction`` error instead of returning
-    ``status=successful`` with an empty ``result``. Mirrors CMEMS at
-    backends/cmems/backend.py:849."""
+    """A ``successful`` row with no cache file never reads ``successful`` with
+    an empty ``result`` (mirrors CMEMS at backends/cmems/backend.py:849), and
+    — T-CDS-FINALISE-ATOMIC decision 13 — never ``failed`` either: the CDS
+    job did succeed, so the poll re-fetches it; status-only polling reads
+    ``download_pending``."""
+    from pathlib import Path
+
     from copernicus_mcp.backends.cds.backend import CdsBackend
 
     await _seed_workflow_row(
@@ -2992,11 +2995,13 @@ async def test_check_status_cache_evicted_after_successful_synthesises_error(
     )
     _patch_cdsapi(monkeypatch)
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
+    backend.set_download_spawning(False)
+    pending = await backend.check_status("rid-ev")
+    assert (pending["status"], pending["phase"]) == ("running", "download_pending")
+    backend.set_download_spawning(True)
     out = await backend.check_status("rid-ev")
-    assert out["status"] == "failed"
-    err = out["error_details"]
-    assert isinstance(err, dict)
-    assert err.get("error_subclass") == "cache_eviction"
+    assert out["status"] == "successful"
+    assert Path(out["result"]["filepath"]).exists()
 
 
 @pytest.mark.asyncio
@@ -3035,13 +3040,15 @@ async def test_fetch_result_unknown_raises_not_found(foundation) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_result_running_row_raises_not_ready(foundation) -> None:
+async def test_fetch_result_running_row_raises_not_ready(foundation, monkeypatch) -> None:
     """A row not yet ``successful`` must surface a structured
     ``BackendError(error_subclass="result_not_ready")`` — never an empty
-    descriptor."""
+    descriptor. (T-CDS-FINALISE-ATOMIC: fetch now polls CDS first; the job is
+    still running here.)"""
     from copernicus_mcp.backends.cds.backend import CdsBackend
     from copernicus_mcp.errors import BackendError
 
+    _patch_cdsapi(monkeypatch, get_remote_json={"status": "running"})
     await _seed_workflow_row(foundation, request_id="rid-w", status="running")
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
     with pytest.raises(BackendError) as exc:
@@ -3080,21 +3087,23 @@ async def test_fetch_result_successful_returns_descriptor(foundation, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_fetch_result_cache_evicted_raises_cache_error(
-    foundation,
+async def test_fetch_result_lost_entry_is_refetched_from_the_finished_job(
+    foundation, monkeypatch
 ) -> None:
-    """Successful row whose cache file was evicted must raise
-    ``CacheError(cache_eviction)`` — caller decides whether to re-run."""
+    """T-CDS-FINALISE-ATOMIC decision 10 (was: raise CacheError): a
+    successful row with no cache file is re-downloaded from its finished CDS
+    job and registered — no new CDS job."""
     from copernicus_mcp.backends.cds.backend import CdsBackend
-    from copernicus_mcp.errors import CacheError
 
+    _, sdk = _patch_cdsapi(monkeypatch, get_remote_json={"status": "successful"})
     await _seed_workflow_row(
         foundation, request_id="rid-gone", cache_key="ck-gone", status="successful"
     )
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
-    with pytest.raises(CacheError) as exc:
-        await backend.fetch_result("rid-gone", Path("/tmp/y"))
-    assert exc.value.error_record.error_subclass == "cache_eviction"
+    out = await backend.fetch_result("rid-gone", Path("/tmp/y"))
+    assert out["status"] == "successful"
+    assert Path(out["result"]["filepath"]).exists()
+    assert sdk.client.download_results.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -3889,11 +3898,14 @@ async def test_check_status_store_file_failure_reverts_row_to_failed(
     )
     _, sdk = _patch_cdsapi(monkeypatch, get_remote_json={"status": "successful"})
 
-    # Force ``cache.store_file`` to blow up (e.g. disk full).
-    async def _broken_store_file(*args, **kwargs):
+    # Force publishing into the cache to blow up (e.g. disk full).
+    # T-CDS-FINALISE-ATOMIC: CDS publishes via ``publish_request_file`` and
+    # commits row + entry in one transaction, so the row is still pending
+    # when the publish fails and settles to ``failed`` (never ``successful``).
+    def _broken_publish(*args, **kwargs):
         raise OSError("simulated disk full")
 
-    monkeypatch.setattr(foundation.cache, "store_file", _broken_store_file)
+    monkeypatch.setattr(foundation.cache, "publish_request_file", _broken_publish)
 
     backend = CdsBackend(foundation=foundation, credentials=_fake_creds())
     # T-CDS-ASYNC-DOWNLOAD: surfaced as a failed envelope (within the inline grace),

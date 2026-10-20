@@ -109,8 +109,8 @@ class DataModelCoordinator:
         ``password=<value>`` (where the literal value is part of the
         key) do NOT collapse and therefore can change the digest. They
         do not leak the literal value into the returned cache_key
-        (which is a sha-256 prefix). Documented residual risk per
-        ``docs/pending_codex_review.md`` accepted-residuals.
+        (which is a sha-256 prefix). Accepted residual risk from that
+        review.
         """
         return construct_cache_key(
             backend=_CDS_BACKEND,

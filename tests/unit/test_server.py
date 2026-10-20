@@ -475,10 +475,10 @@ def test_main_loads_config_without_crashing(monkeypatch: Any, tmp_path: Path) ->
 
     monkeypatch.setattr(server_mod, "serve", _fake_serve)
     monkeypatch.setenv(
-        "COPERNICUS_MCP_STORAGE__STATE_DATABASE", str(tmp_path / "state.db")
+        "COPERNICUS_MCP_STATE_DB", str(tmp_path / "state.db")
     )
     monkeypatch.setenv(
-        "COPERNICUS_MCP_STORAGE__CACHE_DIRECTORY", str(tmp_path / "cache")
+        "COPERNICUS_MCP_CACHE_DIR", str(tmp_path / "cache")
     )
     server_mod.main()
     assert called.get("yes") is True

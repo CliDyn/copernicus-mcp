@@ -667,9 +667,17 @@ async def cds_check_request_status(
       It is deliberately outside ``result``: a failed parent never presents
       itself as a complete delivery.
     - ``result.complete`` on a SUCCESSFUL parent — ``false`` means a part's
-      file has since been evicted from the cache, so the ``files`` list is
-      short; ``evicted_chunk_indices`` names the gaps and ``recovery_hint``
-      says how to refill them.
+      file is no longer in the local cache, so the ``files`` list is short;
+      ``evicted_chunk_indices`` names the gaps and ``recovery_hint`` says how
+      to refill them (``cds_download_request_result`` on the parent).
+
+    **A successful CDS job never reads ``failed`` because its local file is
+    gone.** A lost registration is repaired by the poll itself (``running`` /
+    ``phase="downloading"`` while it re-downloads, then ``successful``). A file
+    the cache's size limit evicted reads ``running`` /
+    ``phase="download_pending"`` with ``next_action_hint``: nothing is
+    downloading it — call ``cds_download_request_result``. Only a result CDS
+    has purged reads ``failed`` (``remote_result_expired``): submit again.
     """
     if input.request_ids is not None:
         # T-CDS-OPS-002: a 21-part window polled every 30 s over 10 h was
@@ -721,7 +729,15 @@ async def cds_download_request_result(
     cache eviction.
 
     Use this after ``cds_check_request_status`` reports
-    ``status=successful``.
+    ``status=successful`` — or to FETCH a result nothing is downloading:
+    when check-status reports ``phase="download_pending"`` (its file was
+    evicted from the local cache, or polling is status-only), or a chunked
+    parent reports ``result.complete=false``. This tool re-registers the
+    file from disk or re-downloads it from the finished CDS job, without a
+    new CDS job. A request whose file is still downloading is waited on for
+    up to ~30 s; if it is not ready yet you get ``result_not_ready`` — call
+    again (it resumes). ``remote_result_expired`` means CDS purged the
+    result: submit again.
 
     Inputs:
       - request_id: returned by ``cds_submit_request``.
