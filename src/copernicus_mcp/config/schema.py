@@ -157,8 +157,10 @@ class BudgetPolicy(_Base):
     # does not list, at submit time. The server accepts unknown keys and
     # silently ignores them — delivering the wrong selection, or failing
     # minutes later with an empty log. Fail-open when a dataset has no
-    # snapshot entry; per-request escape hatch:
-    # ``__options.skip_input_validation=true``.
+    # snapshot entry; a key the snapshot lacks is checked against the live
+    # CDS form before refusing (T-CDS-KEYCHECK-002). Per-request escape
+    # hatch: ``skip_input_validation`` (MCP tool field / CLI
+    # ``--skip-input-validation``).
     cds_input_key_validation: bool = True
     # T-CDS-LICENCE-001: register the MCP-facing ``cds_accept_licence`` tool.
     # Accepting a dataset licence legally binds the ACCOUNT owner, so the

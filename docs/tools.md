@@ -829,7 +829,7 @@ bytes-per-unit factor, and learns from every completed download.
 
 Queue a retrieve. Returns immediately after the server acknowledges; downloads happen via `cds_download_request_result` once status reaches `successful`.
 
-**Unknown input keys are rejected up front.** The CDS server accepts keys a dataset does not use and silently ignores them — the request then delivers the wrong selection, or fails minutes later with an empty log. Keys are validated against the dataset's known input set (the same source as `cds_describe_dataset`'s `available_inputs`, which includes `area`/`data_format`/… where the dataset genuinely accepts them). A dataset missing from the bundled snapshot is not checked; pass `__options.skip_input_validation=true` if a key is newly added upstream and the snapshot is stale.
+**Unknown input keys are rejected up front.** The CDS server accepts keys a dataset does not use and silently ignores them — the request then delivers the wrong selection, or fails minutes later with an empty log. Keys are validated against the dataset's known input set (the same source as `cds_describe_dataset`'s `available_inputs`, which includes `area`/`data_format`/… where the dataset genuinely accepts them). A key the bundled snapshot does not list is checked against the live CDS form (the empty-inputs `cds_apply_constraints` call) before the request is refused, so a key added upstream after the snapshot passes; if the live form cannot be reached, the refusal stands. A dataset missing from the bundled snapshot is not checked. `skip_input_validation=true` skips the check for one request.
 
 **Multi-model requests fan out on `projections-cmip6` and `projections-cordex-domains-single-levels`.** Those datasets execute ONE model per request — a list is accepted by the API but only the first model is delivered, silently. A request naming several models (for CORDEX: several `gcm_model`/`rcm_model` values) therefore always becomes a chunked parent with one part per model combination, and every downloaded part is verified to actually contain its requested model before it is cached (`delivered_content_mismatch` otherwise). Other datasets are untouched.
 
@@ -838,6 +838,7 @@ Queue a retrieve. Returns immediately after the server acknowledges; downloads h
 - `dataset_id`, `inputs` — same as `cds_estimate_request`.
 - `confirmed` (bool, default false) — bypass the size + queue-tier confirmation gate; also accepts an auto-chunk split and clears the first fan-out tier.
 - `confirm_large_fanout` (bool, default false) — second, deliberate ack for a very large auto-chunk split (more parts than `cds_auto_chunk_reconfirm_above`); required *in addition to* `confirmed`.
+- `skip_input_validation` (bool, default false) — skip the unknown-input-key check, for a key CDS accepts that the check still refuses. CDS ignores keys it does not use, so a wrong key then delivers the wrong selection.
 
 ### Output (queued)
 

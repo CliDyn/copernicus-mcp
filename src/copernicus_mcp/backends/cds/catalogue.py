@@ -858,10 +858,15 @@ def accepted_input_keys(dataset_id: str) -> set[str] | None:
     constraints = load_constraints().get(dataset_id)
     if not isinstance(constraints, dict) or not constraints:
         return None
-    keys = set(constraints)
-    if dataset_id.endswith("-timeseries"):
-        keys.add("location")
-    return keys
+    return set(constraints) | synthetic_input_keys(dataset_id)
+
+
+def synthetic_input_keys(dataset_id: str) -> set[str]:
+    """Keys a dataset accepts that its machine-readable form omits: the
+    ``location`` point of the ARCO ``*-timeseries`` products (T-TS-007). Added
+    to the snapshot key set and to the live-form key set alike
+    (T-CDS-KEYCHECK-002)."""
+    return {"location"} if dataset_id.endswith("-timeseries") else set()
 
 
 def describe(dataset_id: str) -> dict[str, Any]:

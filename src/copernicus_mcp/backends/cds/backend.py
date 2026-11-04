@@ -70,6 +70,7 @@ from copernicus_mcp.backends.cds.chunking import (
     sibling_corroborates,
 )
 from copernicus_mcp.backends.cds.costing import fetch_costing
+from copernicus_mcp.backends.cds.live_form import fetch_live_form_keys
 from copernicus_mcp.data_model.provenance import (
     BackendBlock,
     CacheRef,
@@ -1630,10 +1631,11 @@ def _build_chunk_proposal(
             "granularities": estimates,
         },
         "next_action": (
-            f"re-submit cds_submit_request with __options.chunk_by (suggested: "
-            f"{suggested!r}; pick a granularity whose est cost per chunk is under "
-            "the limit), or confirmed=true to accept the suggestion; the result is "
-            "a multi-file set, one file per chunk"
+            f"re-submit cds_submit_request with chunk_by=<year|month|day> (CLI: "
+            f"cds submit --chunk-by; suggested: {suggested!r}; pick a granularity "
+            "whose est cost per chunk is under the limit), or confirmed=true (CLI: "
+            "--yes) to accept the suggestion; the result is a multi-file set, one "
+            "file per chunk"
         ),
         "context": {
             "tool_name": "cds_submit_request",
@@ -1663,8 +1665,8 @@ def _build_chunk_count_confirmation(
         next_action = (
             f"this split launches {chunk_count} CDS jobs at once (> {threshold}) — a "
             "large fan-out. Re-submit cds_submit_request with confirmed=true AND "
-            "__options.confirm_large_fanout=true to proceed, or narrow the request / "
-            "use a coarser granularity for fewer parts."
+            "confirm_large_fanout=true to proceed (CLI: --yes covers both), or "
+            "narrow the request / use a coarser granularity for fewer parts."
         )
     else:
         next_action = (
@@ -2676,7 +2678,7 @@ class CdsBackend(AbstractBackend):
                 record=build_error_record(
                     "ValidationError",
                     message=(
-                        "__options.chunk_by must be one of year/month/day, "
+                        "chunk_by must be one of year/month/day, "
                         f"got {chunk_by!r}"
                     ),
                     recovery_action="modify_request_parameters",
@@ -2933,6 +2935,90 @@ class CdsBackend(AbstractBackend):
         #    suppressed and decoupled from the cure above.
         await self._cancel_chunk_children(dataset_id, plan_doc)
 
+    async def _check_input_keys(self, dataset_id: str, inputs: dict[str, Any]) -> None:
+        """Refuse input keys neither the bundled snapshot nor the live CDS form
+        lists (T-CDS-KEYCHECK-001/002).
+
+        The live form is asked only when the snapshot flags a key, so a request
+        with known keys makes no extra call. A key the live form lists passes
+        (the snapshot is stale; a warning says so). If the live form cannot be
+        read, the refusal stands: CDS silently ignores keys it does not use and
+        delivers the wrong selection, and the refusal has a reachable bypass
+        (``skip_input_validation``). This proves a key exists on the form, not
+        that CDS honours it for every combination; a key the snapshot lists but
+        the live form dropped still passes (snapshot refresh territory)."""
+        unknown_keys = _unknown_input_keys(dataset_id, inputs)
+        if not unknown_keys:
+            return
+        sanitise = self.foundation.sanitiser.sanitise
+        live_keys = await fetch_live_form_keys(
+            dataset_id,
+            http_client_factory=self.foundation.http_client_factory,
+            catalogue=_catalogue,
+        )
+        if live_keys is not None:
+            live_keys |= _catalogue.synthetic_input_keys(dataset_id)
+            accepted_live = [k for k in unknown_keys if k in live_keys]
+            unknown_keys = [k for k in unknown_keys if k not in live_keys]
+            if accepted_live:
+                # Key names are user-supplied: sanitise before they reach the
+                # log (the JSON logger does no redaction of its own).
+                logger.warning(
+                    "cds constraints snapshot is stale for %s: the live form "
+                    "lists %s",
+                    dataset_id,
+                    sanitise(", ".join(accepted_live)),
+                    extra={"dataset_id": dataset_id},
+                )
+            if not unknown_keys:
+                return
+            accepted = sorted(live_keys)
+            not_listed = "Neither the bundled snapshot nor the live CDS form lists them."
+            source = "live CDS form"
+            live_note = ""
+        else:
+            accepted = sorted(_catalogue.accepted_input_keys(dataset_id) or set())
+            not_listed = (
+                "The bundled snapshot does not list them and the live CDS form "
+                "could not be checked, so their acceptance is unverified."
+            )
+            source = "bundled snapshot"
+            live_note = " The live CDS form could not be checked."
+        format_hint = (
+            " Legacy `format` is not accepted by modern CDS — use "
+            "`data_format` (netcdf|grib) plus `download_format` "
+            "(zip|unarchived)."
+            if "format" in unknown_keys
+            else ""
+        )
+        raise CmcpValidationError(
+            f"unknown input key(s) for {dataset_id!r}",
+            record=build_error_record(
+                "ValidationError",
+                # Key NAMES are user-supplied — a pasted credential
+                # would otherwise echo verbatim into the record.
+                message=sanitise(
+                    f"Input key(s) {sorted(unknown_keys)!r} are not "
+                    f"known to be accepted by {dataset_id!r}. {not_listed} "
+                    "The server silently ignores keys a dataset does not "
+                    "use — delivering the wrong selection or failing later "
+                    "with an empty log — so the request is rejected up front."
+                ),
+                recovery_action="modify_request_parameters",
+                # Live key names are remote input: sanitised like the message.
+                next_action_hint=sanitise(
+                    f"Accepted keys for this dataset ({source}): {accepted}."
+                    f"{format_hint}{live_note} cds_apply_constraints (CLI: "
+                    "`cds apply-constraints`) shows the live form and the "
+                    "values that remain valid. If you are sure CDS accepts "
+                    "the key, resubmit with skip_input_validation=true (MCP "
+                    "tool cds_submit_request) or --skip-input-validation "
+                    "(CLI `cds submit`)."
+                ),
+                context={"live_form_checked": live_keys is not None},
+            ),
+        )
+
     async def submit(self, params: dict[str, Any]) -> dict[str, Any]:
         from pydantic import ValidationError as PydValidationError
 
@@ -2991,45 +3077,13 @@ class CdsBackend(AbstractBackend):
         # key set ships in our constraints snapshot and includes adaptor keys
         # (area/data_format/…) where genuinely supported — sweep-verified.
         # Fail-open when the dataset has no snapshot entry: a stale snapshot
-        # is our problem, never the caller's.
+        # is our problem, never the caller's. T-CDS-KEYCHECK-002: a key the
+        # snapshot does not list is checked against the LIVE form before the
+        # request is refused (``_check_input_keys``).
         if self.foundation.config.budget.cds_input_key_validation and not options.get(
             "skip_input_validation"
         ):
-            unknown_keys = _unknown_input_keys(req.dataset_id, dict(req.inputs))
-            if unknown_keys:
-                accepted = sorted(
-                    _catalogue.accepted_input_keys(req.dataset_id) or set()
-                )
-                format_hint = (
-                    " Legacy `format` is not accepted by modern CDS — use "
-                    "`data_format` (netcdf|grib) plus `download_format` "
-                    "(zip|unarchived)."
-                    if "format" in unknown_keys
-                    else ""
-                )
-                raise CmcpValidationError(
-                    f"unknown input key(s) for {req.dataset_id!r}",
-                    record=build_error_record(
-                        "ValidationError",
-                        # Key NAMES are user-supplied — a pasted credential
-                        # would otherwise echo verbatim into the record.
-                        message=self.foundation.sanitiser.sanitise(
-                            f"Input key(s) {sorted(unknown_keys)!r} are not "
-                            f"accepted by {req.dataset_id!r}. The server "
-                            "would silently ignore them — delivering the "
-                            "wrong selection or failing later with an empty "
-                            "log — so the request is rejected up front."
-                        ),
-                        recovery_action="modify_request_parameters",
-                        next_action_hint=(
-                            f"Accepted keys for this dataset: {accepted}."
-                            f"{format_hint} If a key is newly added upstream "
-                            "and our snapshot is stale, call "
-                            "cds_apply_constraints for the live form or pass "
-                            "__options.skip_input_validation=true."
-                        ),
-                    ),
-                )
+            await self._check_input_keys(req.dataset_id, dict(req.inputs))
 
         safe_params = self.foundation.sanitiser.sanitise(params)
         cache_key = self.foundation.data_model.cache_key_for_cds_retrieve(req)
@@ -3201,7 +3255,7 @@ class CdsBackend(AbstractBackend):
                             record=build_error_record(
                                 "ValidationError",
                                 message=(
-                                    "__options.chunk_by must be one of "
+                                    "chunk_by must be one of "
                                     f"year/month/day, got {chunk_by!r}"
                                 ),
                                 recovery_action="modify_request_parameters",

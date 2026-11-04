@@ -285,8 +285,8 @@ async def test_terms_error_hint_mentions_the_in_band_path(
                     "product_type": "ensemble_mean",
                     "variable": "mean_temperature",
                     "grid_resolution": "0_25deg",
-                    "period": "full_period",
-                    "version": "30_0e",
+                    "licence_type": "open_data_licence",
+                    "version": "33_0e",
                 },
                 "__options": {"confirmed": True},
             }

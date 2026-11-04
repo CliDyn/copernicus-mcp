@@ -1,5 +1,6 @@
 {
   "cems-fire-historical-v1": {
+    "area": [],
     "data_format": [
       "grib",
       "netcdf"
@@ -174,6 +175,7 @@
     ]
   },
   "cems-fire-seasonal": {
+    "area": [],
     "data_format": [
       "grib",
       "netcdf"
@@ -605,11 +607,7 @@
       "grib2",
       "netcdf"
     ],
-    "download_format": [
-      "unarchived",
-      "zip"
-    ],
-    "hday": [
+    "day": [
       "01",
       "02",
       "03",
@@ -642,7 +640,14 @@
       "30",
       "31"
     ],
-    "hmonth": [
+    "download_format": [
+      "unarchived",
+      "zip"
+    ],
+    "hydrological_model": [
+      "lisflood"
+    ],
+    "month": [
       "01",
       "02",
       "03",
@@ -656,11 +661,25 @@
       "11",
       "12"
     ],
-    "hydrological_model": [
-      "htessel_lisflood",
-      "lisflood"
+    "product_type": [
+      "consolidated",
+      "intermediate"
     ],
-    "hyear": [
+    "system_version": [
+      "version_4_0",
+      "version_5_0"
+    ],
+    "timespan": [
+      "instantaneous",
+      "time_mean"
+    ],
+    "variable": [
+      "average_river_discharge_in_the_last_24_hours",
+      "runoff_water_equivalent",
+      "snow_depth_water_equivalent",
+      "soil_wetness_index"
+    ],
+    "year": [
       "1979",
       "1980",
       "1981",
@@ -709,21 +728,6 @@
       "2024",
       "2025",
       "2026"
-    ],
-    "product_type": [
-      "consolidated",
-      "intermediate"
-    ],
-    "system_version": [
-      "version_2_1",
-      "version_3_1",
-      "version_4_0"
-    ],
-    "variable": [
-      "river_discharge_in_the_last_24_hours",
-      "runoff_water_equivalent",
-      "snow_depth_water_equivalent",
-      "soil_wetness_index"
     ]
   },
   "cems-glofas-reforecast": {

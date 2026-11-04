@@ -937,6 +937,14 @@ def cds_submit(
     force_refresh: bool = typer.Option(
         False, "--force-refresh", help="Re-run from scratch, bypassing the cache."
     ),
+    skip_input_validation: bool = typer.Option(
+        False,
+        "--skip-input-validation",
+        help=(
+            "Skip the unknown-input-key check, for a key CDS accepts that the "
+            "check still refuses. CDS silently ignores keys it does not use."
+        ),
+    ),
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Submit a CDS / ADS / EWDS retrieve request.
@@ -958,6 +966,8 @@ def cds_submit(
         base_options["chunk_by"] = chunk_by
     if force_refresh:
         base_options["force_refresh"] = True
+    if skip_input_validation:
+        base_options["skip_input_validation"] = True
 
     async def _go() -> dict[str, Any]:
         async with _build_orchestrator_for_cli() as orch:

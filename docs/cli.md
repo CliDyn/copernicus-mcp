@@ -438,6 +438,10 @@ Usage: copernicus-mcp cds submit [OPTIONS]
   --chunk-by TEXT       Split an over-limit request along the calendar axis
                         (year|month|day); run the parts as one workflow.
   --force-refresh       Re-run from scratch, bypassing the cache.
+  --skip-input-validation
+                        Skip the unknown-input-key check, for a key CDS
+                        accepts that the check still refuses. CDS silently
+                        ignores keys it does not use.
   --json
 ```
 
@@ -464,6 +468,10 @@ parts: 3/21 done (running 2, downloading 1, retrying 1, queued 14)
 `downloading` is a part whose server-side job is finished and whose file is transferring; `retrying` is a part the Climate Data Store refused because it was busy, which is re-submitted automatically. Parts are submitted a few at a time rather than all at once, so a large split completes over several waves — a slowly-advancing count is expected, not a stall. See the pacing knobs in `docs/setup.md`.
 
 A large split asks for confirmation: more than `budget.cds_auto_chunk_confirm_above` parts (default 30) prints a confirmation prompt; more than `cds_auto_chunk_reconfirm_above` (default 100) is a heavier batch that prompts a second time. At the CLI a single `--yes` (or one interactive confirm) covers both tiers — the repeat gate exists for the agent path, where the model must escalate to a human. Over `cds_auto_chunk_max_chunks` (default 366) the request is rejected; raise that config to allow a bigger fan-out.
+
+### Unknown input keys
+
+An input key the dataset does not use is refused before anything is queued (`ValidationError`, `recovery_action: modify_request_parameters`): CDS would silently ignore it and deliver the wrong selection. A key the bundled snapshot does not list is checked against the live CDS form first, so a key added upstream passes. The error hint lists the accepted keys; `cds apply-constraints --dataset-id <id>` shows the live form. If you are sure CDS accepts a refused key, re-run with `--skip-input-validation`.
 
 ### T&C errors
 

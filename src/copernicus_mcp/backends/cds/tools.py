@@ -134,6 +134,16 @@ class CdsSubmitRequestInput(CdsRetrieveRequest):
             "Surfaced by the 'auto_chunk_job_count_large' confirmation."
         ),
     )
+    skip_input_validation: bool = Field(
+        default=False,
+        description=(
+            "Set true to skip the unknown-input-key check. Use it only when "
+            "you are sure CDS accepts a key the check refuses (a key added "
+            "upstream that neither the bundled snapshot nor the reachable live "
+            "form lists). CDS silently ignores keys it does not use, so a "
+            "wrong key then delivers the wrong selection."
+        ),
+    )
 
 
 class CdsCheckRequestStatusInput(BaseModel):
@@ -521,8 +531,9 @@ async def cds_submit_request(
     **Unknown input keys are rejected up front** (the server would
     silently ignore them — wrong selection, or an empty-log failure
     minutes later). Compose requests from ``cds_describe_dataset``'s
-    ``available_inputs``; ``__options.skip_input_validation=true``
-    bypasses the check if the bundled snapshot is stale.
+    ``available_inputs`` or ``cds_apply_constraints``. A key the bundled
+    snapshot does not list is checked against the live CDS form before the
+    request is refused; ``skip_input_validation=true`` bypasses the check.
 
     **Multi-model requests on ``projections-cmip6`` and
     ``projections-cordex-domains-single-levels`` always fan out** into
@@ -566,6 +577,8 @@ async def cds_submit_request(
       - confirm_large_fanout (bool, default false): the SECOND ack for a very
         large split. A split over the reconfirm threshold needs BOTH
         confirmed=true and this; confirmed alone will not launch it.
+      - skip_input_validation (bool, default false): skip the unknown-key
+        check, for a key CDS accepts that the check still refuses.
 
     Outputs (queued):
       - {status: "queued", request_id, cache_key, result: {uri:
@@ -593,6 +606,8 @@ async def cds_submit_request(
         options["force_refresh"] = True
     if payload.pop("confirm_large_fanout", False):
         options["confirm_large_fanout"] = True
+    if payload.pop("skip_input_validation", False):
+        options["skip_input_validation"] = True
     out: dict[str, Any] = await orchestrator.run(
         backend="cds",
         operation="submit",
