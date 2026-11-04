@@ -1,8 +1,9 @@
 """Reject unknown input keys at submit time (T-CDS-KEYCHECK-001).
 
 field run 28: `insitu-gridded-observations-europe` was sent an `area` key. The
-dataset is delivered as whole-domain files and its own input set is
-`[grid_resolution, period, product_type, variable, version]` — no `area`. The
+dataset is delivered as whole-domain files and its input set was
+`[grid_resolution, period, product_type, variable, version]` — no `area` (the
+2026-11-04 form swaps `period` for `licence_type`; still no `area`). The
 submit was accepted, the job ran two minutes, and came back
 `remote_job_failed` with an empty log; the reporter isolated the cause only by diffing
 four runs' state databases. The live CORDEX probe (spike T-CDS-MODEL-000)
@@ -13,10 +14,11 @@ requested block.
 The information to reject this up front ships in our own constraints
 snapshot, and the snapshot includes adaptor keys where genuinely supported —
 verified sweep 2026-08-04: `area`+`data_format` on ERA5/ERA5-Land, `date` on
-CAMS (ADS), `hyear` on GloFAS (EWDS), `leadtime_hour` on seasonal all pass
+CAMS (ADS), `hyear` on GloFAS (EWDS; `year` since the 2026-11-04 form),
+`leadtime_hour` on seasonal all pass
 with zero unknowns, while E-OBS+`area` is the single flag. Fail-open when a
-dataset has no snapshot entry; `__options.skip_input_validation=true` is the
-per-request escape hatch and `budget.cds_input_key_validation=false` the
+dataset has no snapshot entry; `skip_input_validation` (MCP tool field / CLI
+`--skip-input-validation`) is the per-request escape hatch and `budget.cds_input_key_validation=false` the
 global kill-switch.
 """
 
@@ -139,8 +141,8 @@ def _eobs_with_area(**options: Any) -> dict[str, Any]:
             "product_type": "ensemble_mean",
             "variable": "mean_temperature",
             "grid_resolution": "0_25deg",
-            "period": "full_period",
-            "version": "30_0e",
+            "licence_type": "open_data_licence",
+            "version": "33_0e",
             "area": [72, -25, 34, 45],
         },
         "__options": {"confirmed": True, **options},
@@ -197,7 +199,7 @@ def test_unknown_keys_fails_open_without_a_snapshot_entry() -> None:
 
 def test_known_good_request_shapes_sweep_clean() -> None:
     """Pin the snapshot property the whole feature depends on: adaptor keys
-    (area, data_format, date, hyear, leadtime_hour) are PRESENT in the
+    (area, data_format, date, leadtime_hour) are PRESENT in the
     snapshots for the datasets that genuinely accept them. If a snapshot
     refresh ever drops them, this fails before users see false rejections."""
     from copernicus_mcp.backends.cds.backend import _unknown_input_keys
@@ -207,7 +209,7 @@ def test_known_good_request_shapes_sweep_clean() -> None:
         "reanalysis-era5-land": ["variable", "year", "month", "day", "time", "area", "data_format"],
         "derived-era5-single-levels-daily-statistics": ["variable", "year", "month", "day", "daily_statistic", "time_zone", "frequency", "area"],
         "cams-global-reanalysis-eac4": ["variable", "date", "time", "data_format"],
-        "cems-glofas-historical": ["system_version", "hydrological_model", "product_type", "variable", "hyear", "hmonth", "hday", "data_format"],
+        "cems-glofas-historical": ["system_version", "hydrological_model", "product_type", "variable", "year", "month", "day", "data_format"],
         "seasonal-original-single-levels": ["originating_centre", "system", "variable", "year", "month", "day", "leadtime_hour", "data_format"],
         "projections-cmip6": ["temporal_resolution", "experiment", "variable", "model", "year", "month", "area"],
     }

@@ -43,6 +43,14 @@ def _no_network_costing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "copernicus_mcp.backends.cds.backend.fetch_costing", _none, raising=False
     )
+    # T-CDS-KEYCHECK-002: the submit key check asks the live CDS form before
+    # refusing a key the snapshot does not list. Default it to "unavailable"
+    # (the refusal stands, as offline); the live-form tests patch their own.
+    monkeypatch.setattr(
+        "copernicus_mcp.backends.cds.backend.fetch_live_form_keys",
+        _none,
+        raising=False,
+    )
 
 
 @pytest.fixture
